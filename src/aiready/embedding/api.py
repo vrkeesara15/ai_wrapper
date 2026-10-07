@@ -8,7 +8,6 @@ live or bulk queue. ``GET /v1/embeddings/info`` returns each model's fingerprint
 """
 
 from __future__ import annotations
-from aiready.core.wiring import local as _local
 
 from typing import Any
 
@@ -17,6 +16,7 @@ from fastapi import Depends, FastAPI, Request
 from aiready.core.app import create_service_app
 from aiready.core.identity import Principal, current_principal_or_service
 from aiready.core.types import EmbeddingData, EmbeddingRequest, EmbeddingResponse, Usage
+from aiready.core.wiring import local as _local
 from aiready.embedding.service import EmbeddingService
 
 

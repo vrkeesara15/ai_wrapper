@@ -10,7 +10,6 @@ Run: ``uvicorn aiready.mcp.api:create_app --factory --port 8140``
 """
 
 from __future__ import annotations
-from aiready.core.wiring import local as _local
 
 from typing import Any, Literal
 
@@ -23,9 +22,10 @@ from aiready.core.app import create_service_app
 from aiready.core.config import get_config
 from aiready.core.identity import Principal, current_principal
 from aiready.core.interfaces import ToolDefinition
-from aiready.mcp.service import ToolService
+from aiready.core.wiring import local as _local
 from aiready.mcp.config import ToolsConfig
 from aiready.mcp.server import MCPMount, build_mcp_server
+from aiready.mcp.service import ToolService
 
 
 class ToolCallBody(BaseModel):

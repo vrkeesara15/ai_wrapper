@@ -124,3 +124,15 @@ def test_sqlite_two_writers(tmp_path):
         a.record("x", actor="s", n=i)
         b.record("y", actor="c", n=i)
     assert a.verify()[0]
+
+
+def test_secret_and_env_substitution(tmp_path, monkeypatch):
+    (tmp_path / "s.yaml").write_text(
+        "a:\n  key: ${secret:llm_api_key}\n  url: ${MY_URL:-http://x:1/v1}\n  missing: ${secret:nope}\n"
+        "  mem: ${STATE:-sqlite:///:memory:}\n")
+    monkeypatch.setenv("AIREADY_SECRET_LLM_API_KEY", "s3cr3t")
+    store = ConfigStore(tmp_path)
+    assert store.get("a.key") == "s3cr3t"
+    assert store.get("a.url") == "http://x:1/v1"
+    assert store.get("a.missing") is None
+    assert store.get("a.mem") == "sqlite:///:memory:"

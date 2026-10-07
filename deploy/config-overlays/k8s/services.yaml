@@ -48,3 +48,23 @@ model_servers:
 audit:
   sinks:
     - type: stdout
+
+# Model pools: the vLLM / TEI Deployments rendered by the chart (templates/model-serving.yaml). vLLM serves each
+# model under its pool name (--served-model-name), TEI serves /v1/embeddings and /rerank. "=replicas" replaces
+# the in-process mock replicas of config/models.yaml. Point AIREADY_MODEL_LARGE_URL at a large-model pool or a
+# private endpoint when stage 2 adds the second model tier.
+models:
+  pools:
+    small-llm:
+      model: small
+      =replicas: [{type: openai, base_url: "${AIREADY_MODEL_SMALL_URL:-http://model-small:8000/v1}", api_key: "${secret:llm_api_key}"}]
+    mid-llm:
+      model: chat
+      =replicas: [{type: openai, base_url: "${AIREADY_MODEL_CHAT_URL:-http://model-chat:8000/v1}", api_key: "${secret:llm_api_key}"}]
+    large-llm:
+      model: ${AIREADY_MODEL_LARGE_NAME:-chat}
+      =replicas: [{type: openai, base_url: "${AIREADY_MODEL_LARGE_URL:-http://model-chat:8000/v1}", timeout: 180, api_key: "${secret:llm_api_key}"}]
+    embedding:
+      =replicas: [{type: openai, base_url: "${AIREADY_MODEL_EMBED_URL:-http://model-embed:8000}/v1"}]
+    reranker:
+      =replicas: [{type: openai, base_url: "${AIREADY_MODEL_RERANK_URL:-http://model-rerank:8000}/v1", rerank_style: tei}]

@@ -6,7 +6,6 @@ checkpoint store.
 """
 
 from __future__ import annotations
-from aiready.core.wiring import local as _local
 
 import json
 from collections.abc import AsyncIterator
@@ -17,9 +16,10 @@ from pydantic import BaseModel, Field
 from sse_starlette.sse import EventSourceResponse
 
 from aiready.agents.models import RunEvent
+from aiready.agents.service import AgentService
 from aiready.core.app import create_service_app
 from aiready.core.identity import Principal, current_principal
-from aiready.agents.service import AgentService
+from aiready.core.wiring import local as _local
 
 
 class StartRunBody(BaseModel):

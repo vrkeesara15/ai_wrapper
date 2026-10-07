@@ -4,7 +4,6 @@
 """
 
 from __future__ import annotations
-from aiready.core.wiring import local as _local
 
 from typing import Any
 
@@ -15,6 +14,7 @@ from aiready.core.app import create_service_app
 from aiready.core.errors import AuthenticationError
 from aiready.core.identity import Principal, current_principal, principal_from_headers
 from aiready.core.telemetry import SpanRecord
+from aiready.core.wiring import local as _local
 from aiready.observability.dashboard import render_dashboard
 from aiready.observability.exports import grafana_dashboard, prometheus_rules
 from aiready.observability.feedback import FeedbackIn

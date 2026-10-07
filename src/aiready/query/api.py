@@ -9,7 +9,6 @@
 """
 
 from __future__ import annotations
-from aiready.core.wiring import local as _local
 
 from typing import Any
 
@@ -18,6 +17,7 @@ from fastapi import Depends, FastAPI
 from aiready.core.app import create_service_app
 from aiready.core.identity import Principal, current_principal
 from aiready.core.interfaces import QueryRequest, QueryResult, ToolDefinition
+from aiready.core.wiring import local as _local
 
 
 def create_app(service: Any | None = None) -> FastAPI:
@@ -25,7 +25,6 @@ def create_app(service: Any | None = None) -> FastAPI:
 
     def svc() -> Any:
         if holder["svc"] is None:
-            from aiready.query.service import QueryServiceImpl
 
             holder["svc"] = _local("query")
         return holder["svc"]

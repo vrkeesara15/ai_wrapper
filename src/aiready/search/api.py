@@ -12,7 +12,6 @@ uvicorn aiready.search.api:create_app --factory --port 8102
 """
 
 from __future__ import annotations
-from aiready.core.wiring import local as _local
 
 from typing import Any
 
@@ -22,6 +21,7 @@ from pydantic import BaseModel, Field
 from aiready.core.app import create_service_app
 from aiready.core.identity import Principal, current_principal, current_principal_or_service
 from aiready.core.types import Chunk, SearchHit, SearchRequest
+from aiready.core.wiring import local as _local
 from aiready.search.service import SearchService
 
 WRITE_ROLES = ("service", "ingestion")

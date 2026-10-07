@@ -8,7 +8,6 @@ conditions (time windows, tenants...) without a code change. Revoked callers are
 """
 
 from __future__ import annotations
-from aiready.core.wiring import local as _local
 
 from typing import Any, Literal
 
@@ -20,6 +19,7 @@ from aiready.core.app import create_service_app
 from aiready.core.errors import AuthenticationError, PermissionDenied
 from aiready.core.identity import Principal, current_principal, current_principal_or_service
 from aiready.core.interfaces import PolicyDecision, PolicyInput
+from aiready.core.wiring import local as _local
 from aiready.governance.config import EgressDestination
 from aiready.governance.policy import PolicyTestReport, run_policy_cases
 from aiready.governance.registry import AdapterRecord, ModelRecord

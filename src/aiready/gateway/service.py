@@ -33,7 +33,6 @@ from typing import Any
 from aiready.cache.semantic import CacheScope, ExactCache, SemanticCache
 from aiready.core.audit import get_audit
 from aiready.core.config import ConfigStore, get_config
-from aiready.core.config import get_config
 from aiready.core.errors import (
     AIReadyError,
     AuthenticationError,

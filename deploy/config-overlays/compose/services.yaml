@@ -40,3 +40,22 @@ model_servers:
   embed: "${AIREADY_MODEL_EMBED_URL:-http://mock-models:8200/v1}"
   rerank: "${AIREADY_MODEL_RERANK_URL:-http://mock-models:8200/v1}"
   guard: "${AIREADY_MODEL_GUARD_URL:-http://mock-models:8200/v1}"
+
+# Model pools served over HTTP (OpenAI-compatible). In the default compose profile every pool points at the
+# mock model server; the `gpu` profile sets AIREADY_MODEL_*_URL to vLLM / TEI containers. "=replicas" replaces
+# the in-process mock replicas of config/models.yaml.
+models:
+  pools:
+    small-llm:
+      model: ${AIREADY_MODEL_SMALL_NAME:-small}
+      =replicas: [{type: openai, base_url: "${AIREADY_MODEL_SMALL_URL:-http://mock-models:8200/v1}", api_key: "${secret:llm_api_key}"}]
+    mid-llm:
+      model: ${AIREADY_MODEL_CHAT_NAME:-chat}
+      =replicas: [{type: openai, base_url: "${AIREADY_MODEL_CHAT_URL:-http://mock-models:8200/v1}", api_key: "${secret:llm_api_key}"}]
+    large-llm:
+      model: ${AIREADY_MODEL_LARGE_NAME:-chat}
+      =replicas: [{type: openai, base_url: "${AIREADY_MODEL_LARGE_URL:-http://mock-models:8200/v1}", timeout: 180, api_key: "${secret:llm_api_key}"}]
+    embedding:
+      =replicas: [{type: openai, base_url: "${AIREADY_MODEL_EMBED_URL:-http://mock-models:8200/v1}"}]
+    reranker:
+      =replicas: [{type: openai, base_url: "${AIREADY_MODEL_RERANK_URL:-http://mock-models:8200/v1}"}]

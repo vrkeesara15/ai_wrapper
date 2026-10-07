@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import model_validator, BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from aiready.core.types import DataClass
 

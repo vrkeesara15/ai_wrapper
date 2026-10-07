@@ -33,7 +33,7 @@ from aiready.core.errors import ConfigError
 log = logging.getLogger(__name__)
 M = TypeVar("M", bound=BaseModel)
 
-_VAR = re.compile(r"\$\{([^}:]+?)(?::-(.*?))?\}")
+_VAR = re.compile(r"\$\{([^}]+?)(?::-([^}]*))?\}")
 SECRET_DIRS = [Path(p) for p in os.environ.get("AIREADY_SECRET_DIRS", "/run/secrets:/var/run/secrets/aiready").split(":")]
 
 

@@ -7,7 +7,6 @@ pipelines screening documents). Unmasking requires a signed-in user with an unma
 """
 
 from __future__ import annotations
-from aiready.core.wiring import local as _local
 
 from typing import Any
 
@@ -17,6 +16,7 @@ from pydantic import BaseModel, Field
 from aiready.core.app import create_service_app
 from aiready.core.identity import Principal, current_principal, current_principal_or_service
 from aiready.core.interfaces import ScreenResult, ValidationResult
+from aiready.core.wiring import local as _local
 from aiready.guardrails.service import GuardrailService
 
 

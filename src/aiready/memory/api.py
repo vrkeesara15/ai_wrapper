@@ -14,7 +14,6 @@ Every route acts on the caller's own memory only (tenant + user from the verifie
 """
 
 from __future__ import annotations
-from aiready.core.wiring import local as _local
 
 from typing import Any, Literal
 
@@ -25,6 +24,7 @@ from aiready.core.app import create_service_app
 from aiready.core.errors import PermissionDenied
 from aiready.core.identity import Principal, current_principal, current_principal_or_service
 from aiready.core.interfaces import MemoryItem
+from aiready.core.wiring import local as _local
 
 
 class TurnIn(BaseModel):
@@ -44,7 +44,6 @@ def create_app(service: Any | None = None) -> FastAPI:
 
     def svc() -> Any:
         if holder["svc"] is None:
-            from aiready.memory.service import MemoryServiceImpl
 
             holder["svc"] = _local("memory")
         return holder["svc"]

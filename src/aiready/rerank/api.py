@@ -9,7 +9,6 @@
 """
 
 from __future__ import annotations
-from aiready.core.wiring import local as _local
 
 from typing import Any
 
@@ -17,6 +16,7 @@ from fastapi import Depends, FastAPI
 
 from aiready.core.app import create_service_app
 from aiready.core.identity import Principal, current_principal_or_service
+from aiready.core.wiring import local as _local
 from aiready.rerank.service import RerankApiRequest, RerankHitsRequest, RerankOutcome, RerankService
 
 

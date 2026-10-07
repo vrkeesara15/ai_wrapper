@@ -8,7 +8,6 @@ response_mode, prompt_version). A calling application may also present a gateway
 """
 
 from __future__ import annotations
-from aiready.core.wiring import local as _local
 
 import json
 from collections.abc import AsyncIterator
@@ -32,6 +31,7 @@ from aiready.core.types import (
     RerankResponse,
     Usage,
 )
+from aiready.core.wiring import local as _local
 from aiready.gateway.keys import ClientIdentity
 from aiready.gateway.service import GatewayService
 

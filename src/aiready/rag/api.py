@@ -9,7 +9,6 @@
 """
 
 from __future__ import annotations
-from aiready.core.wiring import local as _local
 
 import json
 import logging
@@ -24,6 +23,7 @@ from aiready.core.errors import AIReadyError
 from aiready.core.identity import Principal, current_principal
 from aiready.core.interfaces import RagAnswer, RagQuery
 from aiready.core.types import SearchHit
+from aiready.core.wiring import local as _local
 
 log = logging.getLogger(__name__)
 
@@ -34,7 +34,6 @@ def create_app(service: Any | None = None) -> FastAPI:
 
     def svc() -> Any:
         if holder["svc"] is None:
-            from aiready.rag.service import RagServiceImpl
 
             holder["svc"] = _local("rag")
         return holder["svc"]
