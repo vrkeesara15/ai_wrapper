@@ -1,0 +1,1027 @@
+Reference architecture · Draft for review
+
+
+
+
+AI-ready applications
+An AI foundation for the software a business already runs: open models,
+private data, agent-ready, sized to actual use.
+
+
+
+
+[Company name]                                                            October 2026
+The problem
+
+
+The pilot-to-production gap
+                                                              What leaders say stops them
+78%                                                           Integration with
+                                                              existing systems
+                                                                                                                                 63%
+of enterprises have an AI agent pilot running
+                                                              Output quality at volume                                         58%
+
+
+
+14%
+                                                              Monitoring and observability                                 54%
+
+                                                              Unclear ownership                                          49%
+
+have scaled one across the organisation                       Domain training data                                 41%
+
+
+                                                              Model capability is not on the list. These are architecture and
+                                                              operating problems.
+
+
+
+
+Source: Digital Applied survey of 650 enterprise technology leaders, February to March 2026.
+The offer
+
+
+
+
+We add an AI foundation beside the application a
+client already runs, inside their own environment,
+without rewriting it.
+
+
+
+One foundation                           The client's control                       Sized to use
+Search, memory, model serving and        Open-weight models on the client's         Starts on a small footprint with one use
+agent access, built once and reused by   hardware or private cloud. Data does not   case. Capacity is added when measured
+every later AI feature.                  leave unless they choose.                  usage calls for it.
+Architecture
+
+
+Five design principles
+                           The foundation connects through the application's existing APIs, database and
+Add, without rewriting     login. The application's own code stays as it is.
+
+                           Every model call goes through one gateway, so a model can be swapped without
+Any model, one interface   touching the application.
+
+                           Models, search index and logs run in the client's data centre or private cloud.
+Data stays inside          Nothing leaves unless the client chooses.
+
+                           Start on one GPU node. Add capacity when measured usage calls for it, and release
+Scale when usage asks      it when demand drops.
+
+                           Evaluation tests, request tracing and cost tracking are in place before the first
+Measured from day one      feature ships.
+Architecture
+
+
+The reference architecture
+ Channels               Existing app screens, an embedded assistant, and outside AI agents    Security and         Observability and
+                                                                                              identity             evals
+                        MCP server over the app's APIs, WebMCP tools in the browser, every
+ Agent interface                                                                              Single sign-on and   Trace for every
+                        call under the user's own login
+                                                                                              role-based access    request
+                        Agent runtime, multi-step workflows, human approval before any
+ Orchestration                                                                                Personal data        Cost and latency
+                        write action
+                                                                                              masking              per feature
+                        One endpoint for every model: routing, caching, token                 Injection checks     Test suite on every
+ AI gateway
+                        budgets, guardrails                                                                        release
+                                                                                              Audit log
+                                                                                                                   Quality scores
+ Knowledge and          Ingestion pipeline, hybrid search with reranking, session and long-
+                                                                                                                   over time
+ memory                 term memory
+
+                        Open-weight language, embedding and reranker models on the
+ Model serving
+                        client's GPUs, with an optional private endpoint
+
+ Existing application   Database, APIs, documents and login stay as they are
+Architecture
+
+
+System architecture
+Channels and access                      AI platform                                         Models, stores, ingestion
+
+                                                                             Guardrail
+ App screens         App backend                           Agent runtime                     LLM serving          State store
+                                                                             service
+                                          AI gateway
+ Assistant                                Identity                           Semantic        Embedding
+                     Assistant API        Limits           RAG service                                            Cache store
+ widget                                                                      cache           service
+                                          Guardrails
+ Outside                                  Cache                                              Reranker
+                     MCP server                            Query service     Policy engine                        Vector index
+ agents                                   Routing                                            service
+                                          Tracing
+ Browser                                                   Memory            Tracing and
+                     WebMCP tools                                                            Model registry       Keyword index
+ agents                                                    service           evals
+
+
+
+Existing data and identity
+
+
+ Identity provider      App database and document stores    Change capture                   Ingestion pipeline
+Architecture
+
+
+The path of one request
+ 01                                          02                                             03
+ Ask                                         Check                                          Reuse
+ A user in the app, or an outside agent      Identity is confirmed. The input is screened   The cache answers repeated or near-
+ through MCP, sends a request.               for injected instructions and personal data.   identical questions without calling a model.
+
+
+
+ 04                                          05                                             06
+ Retrieve                                    Route                                          Act and record
+ Hybrid search pulls only the records this   The gateway sends the request to the           Tools run through MCP, writes wait for
+ user is allowed to see.                     smallest model that passes the evaluation      approval, and the full trace is logged
+                                             for that task.                                 and scored.
+Architecture
+
+
+Model strategy
+ Model tier                                      Typical work                                            Where it runs
+
+ Small open-weight model                         Routing, classification, extraction                     One shared GPU
+
+ Mid-size open-weight model                      Most chat, search answers and tool calls                Client GPUs
+
+ Large model, or a private enterprise endpoint   Long multi-step agent tasks and hard reasoning          GPU cluster, or the client's private cloud
+                                                                                                         tenancy
+
+ Embedding and reranker models                   Semantic search                                         Same GPUs, small footprint
+
+
+Open-weight first, not open-weight only. Open models still trail the leading closed models on long, multi-step agent
+work. The gateway lets each workload use whichever model passes its evaluation, and every model licence is checked
+before deployment.
+
+
+
+
+Families reviewed at assessment include Qwen, Llama, Mistral, Gemma and DeepSeek. The choice is made per client.
+Architecture
+
+
+Agent interface: MCP and WebMCP
+   MCP server                              In production use today           WebMCP                                Emerging, experimental
+
+   Wraps the application's existing APIs as typed tools on the               The web front end registers tools that a browser agent
+   server side.                                                              calls directly, with no screen scraping.
+
+   Any MCP-capable assistant or agent can discover and                       Available as a Chrome origin trial. The specification is a
+   call them.                                                                W3C community group draft, not yet a standard.
+
+   Each call carries the signed-in user's permissions.                       We ship it as an add-on: the page behaves the same where
+                                                                             it is absent.
+
+
+
+Both expose the actions the application already offers, under the permissions it already enforces.
+
+
+
+
+WebMCP status as of October 2026. Sources: Chrome for Developers; InfoQ, June 2026.
+Architecture
+
+
+Cost controls in the gateway
+
+ 
+ Prefix caching
+                                             
+                                             Semantic cache
+                                                                                         
+                                                                                         Model routing
+ System prompts and tool definitions that    Questions that mean the same thing return   Simple requests go to a small model. Only
+ repeat are cached by the model server,      a stored answer, checked against the        the hard ones reach the large model.
+ not recomputed.                             user's permissions.
+
+
+
+
+ 
+ Context trimming
+                                             
+                                             Token budgets
+                                                                                         
+                                                                                         Batch and async
+ Reranked retrieval and summarised history   Limits and usage reports for each team,     Work that nobody is waiting on runs off-peak
+ keep each prompt to what the task needs.    feature and user.                           on spare capacity.
+Architecture
+
+
+Knowledge and memory
+Search pipeline
+
+
+ Connect
+                              Index                         Search                             Rerank                         Answer
+ Databases,
+                              Split content, embed          Keyword plus vector,               Keep the few                   Grounded reply with
+ documents,
+                              with a local model            filtered by user access            passages that matter           links to sources
+ tickets, wikis
+
+
+Memory
+
+
+ Session                                         Long-term                                              Shared knowledge
+ The current conversation, summarised as         Facts and preferences for each user, stored            The search index above, refreshed as the
+ it grows.                                       with consent and an expiry date.                       source systems change.
+Architecture
+
+
+Controls for security review
+ Control                            How it works
+
+ Identity                           Agents act as the signed-in user. There are no shared service accounts.
+
+ Guardrails                         Inputs are screened for injected instructions, personal data is masked, and outputs are
+                                    validated against a schema.
+
+ Approval gates                     Reads run freely. Writes, payments and deletions wait for a person.
+
+ Evaluation                         A test set built from real client questions runs before every release.
+
+ Audit trail                        Every prompt, retrieved record, tool call and answer is logged and traceable.
+
+
+These are built before the first agent, so the security team reviews a finished design.
+Deep dive
+
+
+RAG architecture
+Indexing path · offline, on a schedule
+
+                                                                                   Write to index with
+   Source systems             Parse and chunk             Embed chunks
+                                                                                      access tags
+
+
+
+
+                                                                                       Vector and
+                                                       Embedding service                                      Reranking service       LLM serving
+                                                                                     keyword index
+
+
+
+
+                                                                                                                                    Generate answer
+    User question               Screen input              Embed query                Hybrid search           Rerank the shortlist
+                                                                                                                                     with sources
+
+Query path · online, on every request
+
+
+Dark boxes are model services. The blue box is the one store both paths share: indexing writes to it, queries read from it.
+Deep dive
+
+
+RAG ingestion pipeline
+ Extract                                             Transform                                            Load
+
+  1 Connect                                            4 Clean and classify                                 7 Embed
+  Databases, file stores, wikis and                    Strip boilerplate, flag personal data,               Batched calls to the embedding service
+  ticket systems                                       tag sensitivity
+
+                                                                                                            8 Index
+  2 Detect changes                                     5 Chunk                                              Upsert vectors and keywords, remove
+  Only new, changed and deleted items                  Split along headings and sections,                   deleted items
+  since the last run                                   with overlap
+
+                                                                                                            9 Verify
+  3 Parse                                              6 Enrich                                             Test questions confirm the new content
+  Text, tables and scanned pages turned                Source, date, owner and access list on               can be found
+  into clean text                                      every chunk
+
+
+
+ Across every stage: scheduled and event-driven runs, retries with a dead-letter queue, and lineage from every chunk back to its source record.
+Architecture
+
+
+Ingestion platform architecture
+Sources             Connect                 Stage                         Process · worker pool             Load
+
+ Databases          Connector                                             1 Parse
+                                                Landing store                                                Index writer
+                    workers
+                                                Raw copies, kept                                             Upserts and deletes in
+                    One per
+                                                for replay                2 Clean and classify               both indexes
+ File shares        source type
+
+
+ Wikis                                                                    3 Chunk and tag access
+                    Change detector             Work queue                                                   Verifier
+                    New, changed,               One message per                                              Test questions after
+                    deleted                     document                  4 Embed, via the service           each load
+ Ticket systems
+
+
+
+
+Control and state
+
+ Scheduler              Document registry             Dead-letter queue             Lineage store           Pipeline metrics
+ Timed runs and         Version, checksum and         Failed items held             Every chunk traced to   Lag, failures, items
+ change events          status of every item          for replay                    its source              per hour
+Deep dive
+
+
+Embedding model service
+ Callers                      Service API                    Vector cache                 Dynamic batcher                Model replicas
+                              One internal endpoint          Keyed on text hash           Holds requests for a           Open embedding
+  Ingestion: large
+                              behind the gateway.            and model version.           few milliseconds to fill       model on GPU.
+  batches, can wait
+                              Bulk and live traffic use      Repeated text skips          each GPU batch.                Replicas scale on
+                              separate queues.               the GPU.                                                    queue depth. Vectors
+  Query: one text,
+                                                                                                                         return to the caller.
+  needed at once
+
+
+
+One model version per index                       Same model on both paths                        Small footprint
+Vectors from different models cannot be           Documents and questions are embedded by the     Embedding models are usually much smaller
+compared. Changing the model means a full         same model with the same settings.              than the chat model and can share a GPU with
+re-embed.                                                                                         the reranker.
+Deep dive
+
+
+Vector search service
+                             Filter by access and metadata first,
+                             then score
+
+ Search request               Dense vector index                                                 Top 50 candidates
+                                                                      Rank fusion
+ Query vector, query text,    Nearest neighbours by meaning                                      Sent to the reranking
+                                                                      The two result lists are
+ the user's access groups,    (HNSW graph)                                                       service with score
+                                                                      merged into one ranking
+ and any filters                                                                                 and source
+                              Keyword index
+                              Exact terms, codes and names (BM25)
+
+
+
+
+                             Write path
+                                                                      One collection per         Replicas for read load,
+                             Upserts and deletes from the ingestion
+                                                                      application and tenant     snapshots for recovery
+                             pipeline, applied to both indexes
+Architecture
+
+
+Retrieval platform architecture
+ RAG service                               Vector database cluster                                   Companion stores
+
+  Query planner                             One collection per application and tenant. Access tags    Embedding cache
+  Rewrites, splits the question             are stored with every vector.                             Text hash to vector
+
+
+  Retriever                                 Query coordinator. Fans out to shards, merges results     Keyword index
+  Searches with access tags                                                                           BM25 over the same chunks
+
+
+  Rerank client                                                                                       Semantic cache
+                                            Shard 1             Shard 2              Shard N
+  Calls the reranking service                                                                         Question vector to answer
+                                            Vector index        Vector index         Vector index
+                                            Tag index           Tag index            Tag index
+  Context builder                           Two replicas        Two replicas         Two replicas     Document registry
+  Fits the token budget                                                                               Source, version, checksum
+
+
+  Citation mapper                           Write-ahead log                Snapshots                  Object storage
+  Links claims to passages                  Writes from ingestion          Scheduled, restorable      Raw files and snapshots
+
+
+Some engines hold the vector and keyword indexes together. The design is the same either way.
+Deep dive
+
+
+Reranking service
+ Input                           Build pairs                      Score                            Select                            Output
+ The question and the            One question and                 A cross-encoder model            Sort by score, drop               5 passages go to the
+ top 50 candidates               passage pair per                 reads each pair                  anything under the                prompt, in score order
+ from search                     candidate, trimmed               together and returns a           threshold, keep the
+                                 to the model's                   relevance score.                 top 5
+                                 length limit                     Batched on GPU.
+
+
+
+Why a second model                                   Fallback                                               Tuning
+Search encodes question and passage separately:      If the reranker is slow or unavailable, the search     50 in and 5 out are starting defaults, adjusted for
+fast, approximate. The reranker reads them           order is used and the event is logged.                 each client against the evaluation set.
+together: slower and more precise, so it only sees
+the shortlist.
+Deep dive
+
+
+Semantic cache
+ Request                          Embed                          Cache lookup                    Close enough?                   Yes: cache hit
+ Screened question                Question turned into           Nearest stored                  Similarity over the             Stored answer
+ from a signed-in user            a vector                       question in the                 threshold and entry             returned. No
+                                                                 same scope                      not expired                     model call.
+
+
+
+                                                                 Store                           No: cache miss                  Fresh answer
+                                                                 Answer, sources, scope          Run retrieval and               Returned to the user
+                                                                 and expiry written back         the model
+
+
+
+Scope                                               Expiry                                               Never cached
+An entry is reused only for the same application,   A time limit per content type. Entries are dropped   Answers with personal data, write actions, and
+access groups, prompt version and model.            when a source document changes.                      answers that failed a check.
+Deep dive
+
+
+Runtime execution flow
+ 01                                    02                                     03                                     04
+ User request                          Vector embedding                       Vector DB                              Top chunks
+ A signed-in user asks in the          The embedding service turns            Hybrid search, filtered by what        The 50 best candidates, each
+ app. The input is screened.           the question into a vector.            this user may see.                     with source and score.
+
+
+
+ 08                                    07                                     06                                     05
+ Response                              Hallucination checks                   LLM generation                         Rerank
+ Answer with sources to                Each claim must be backed by           Prompt holds the instructions,         The reranker scores each one
+ the user. Trace and scores            a retrieved passage. Citations         the 5 passages and                     and keeps the best 5.
+ are logged.                           are verified.                          the question.
+
+
+ Weak retrieval: say the answer was not found.    Check fails: regenerate once, then return the      Model slow: fall back to a smaller model.
+ Do not guess.                                    sources only.
+Deep dive
+
+
+Internal API gateway
+ Callers                Gateway: every call passes these steps                                                Backends
+
+                         1 Authenticate. Service identity and      2 Limit. Rate limits and                    LLM serving: small, mid
+                         user token                                token budgets                               and large models
+  Application backend
+
+                         3 Screen. Injection and personal-         4 Reuse. Exact and semantic                 Embedding service
+                         data checks                               cache lookup
+
+  Agents and             5 Route. Pick the model by task, cost     6 Call. Timeouts, retries and a             Reranking service
+  MCP tools              and policy                                fallback model
+
+                         7 Validate. Schema and safety             8 Record. Tokens, latency, cost and         Vector search service
+                         checks on the output                      the full trace
+  Batch and
+  pipeline jobs         Model list, routing rules, budgets and keys are configuration here. The application    Outside endpoint, only
+                        does not change.                                                                       where policy allows
+Architecture
+
+
+Gateway architecture
+                Control plane · changes apply without a restart
+                                   Config store          Key service
+                Admin API                                                    Policy bundles
+                                   Routes, models,       Service and user                        Upstream pools
+                Audited changes                                              Versioned rules
+                                   budgets               tokens
+                                                                                                 Small LLM pool
+
+                Data plane · stateless, three or more replicas
+                                                                                                 Large LLM pool
+                1 Authenticate     2 Limit               3 Screen, reuse     4 Route and call
+Callers         Service and user   Rates and budgets     Guardrails, cache   Retry, fall back    Embedding pool
+App backend
+Agent runtime
+                8 Respond          7 Trace               6 Meter             5 Validate          Reranker pool
+Batch jobs
+                Streamed back      Every call exported   Tokens and cost     Schema and safety
+                                                                                                 Outside endpoint
+
+                State · shared by all replicas
+
+                Counter store      Cache store           Usage database      Trace collector
+Architecture
+
+
+Model serving architecture
+AI gateway                           Inference router                        Every server speaks the same chat or embedding API, so changing a
+Picks the pool                       Picks the least-loaded replica          model is a routing change, not a code change.
+
+
+
+ Chat model pool                                     Small model pool                                   Embedding and rerank pool
+
+  Model server 1         Model server N               Router model           Guard model                 Embedding server       Rerank server
+  Batches requests       Prefix cache                 Sorts requests         Flags unsafe text           Dynamic batches        Scores pairs
+
+
+  GPU nodes, one model per group                      One shared GPU                                     One shared GPU
+
+  Scales on queue depth and tokens                    Always on. Keeps the large model for the           Bulk ingestion is queued behind
+  per second.                                         hard requests.                                     live queries.
+
+Supporting services
+ Model store                           Autoscaler                             Rollout controller                   Serving metrics
+ Verified weights, cached on           Adds replicas on queue depth,          New version runs beside the old,     Tokens per second, queue time,
+ each node                             keeps one warm                         then traffic moves                   GPU memory
+Deep dive
+
+
+LLM orchestration
+       Model router                         Tools and knowledge                       Policy and approval                           Answer and trace
+   through the gateway                      MCP, search, memory                      people confirm writes                         returned and logged
+
+
+                                                                                                                                                Done
+
+
+1 Plan                                   2 Act                                     3 Check                                      4 Decide
+The model chooses the                    Call a tool, run a search or              Validate the result                          Goal met, or another
+next step                                ask a model                               against policy                               step needed?
+
+
+
+                                                              Not done: take the next step
+
+ Around every run
+
+  State store. A checkpoint after every step, so     Limits. Caps on steps, time and tokens for          Patterns. Single call, retrieval chain, router,
+  a run can resume.                                  each run.                                           agent loop.
+Architecture
+
+
+Agent runtime architecture
+Entry                         Agent runtime · stateless workers                                   What a step may call
+
+ Assistant API                 Run queue                      Workflow registry                   Model client              Tool executor
+ Start, stream or              Runs waiting for a worker      Versioned step graphs               Through the gateway       MCP tools, timeouts
+ resume a run
+
+
+ Event stream                  Workflow workers                                                   Retrieval client          Memory service
+ Steps and words to            Run one step, save state, pick the next step                       The RAG service           Session and long-term
+ the screen
+
+
+ Approval inbox                Approval gate        Limits
+                                                                         Error handler            Query service             Sub-agent
+ A person confirms             Pauses before        Steps, time,
+                                                                         Retry, then stop         Governed SQL tool         A run for one sub-task
+ or rejects                    any write            tokens
+
+
+
+
+ Checkpoint store. State after every step, so       Run history. Inputs, outputs and decisions,        Memory store. Facts for each user, with an
+ any worker can resume                              kept for audit                                     expiry date
+Deep dive
+
+
+LLM categories: private and public
+ Private. Runs inside the client's boundary. Prompts and data stay there.         Public. Hosted by a vendor. Prompts leave the
+                                                                                  client's boundary.
+   Original open-weight        Tuned                         Private endpoint
+   Published weights, run      An adapter or fine-tune       A vendor's model      Proprietary API              Hosted open-weight
+   as released on the          trained on the client's       served inside the     The vendor's own             An open model run by a
+   client's GPUs.              own data.                     client's own cloud    model. Weights are not       hosting provider.
+   Base model: itself.         Base model: an open-          tenancy.              published.                   Base model: an open-
+                               weight original.              Base model: the       Tuning only where the        weight original.
+                                                             vendor's.             vendor offers it.
+
+
+
+The default route is private. A public route needs a policy entry naming the classes of data allowed to leave.
+Deep dive
+
+
+Model registry
+ Model slot                Availability               Type                     Originality             Parameters              Base model
+
+ General model             Private, client GPUs       Chat and tool calling    Original                Mid tier                Open-weight family
+
+ Domain model              Private, client GPUs       Chat and extraction      Tuned adapter           Base plus a small       The general model
+                                                                                                       adapter
+
+ Router model              Private, shared GPU        Classification           Original, quantised     Small tier              Small open-weight
+
+ Embedding and             Private, shared GPU        Embedding and            Original                Small tier              Open embedding
+ reranker                                             scoring                                                                  family
+
+ Escalation model          Private endpoint or        Reasoning, long tasks    Original                Large tier, or not      Open-weight or
+                           public API                                                                  published               vendor
+
+
+
+
+Working size tiers: small is under 10B parameters, mid is 10B to 40B, large is above 40B. Named models are chosen at assessment and recorded with
+licence and context length.
+Deep dive
+
+
+Security and governance
+ Client environment: data centre or private cloud
+
+  Application zone                          AI platform zone                          Model zone                                    Outside model API
+  Existing app and login                    Gateway, orchestration, search            GPU nodes and model servers                   Closed by default.
+  Control: user identity travels with       Control: access rules, masking            Control: no outbound network,                 An egress policy
+  every call                                and guardrails enforced                   internal model registry                       opens it per
+                                                                                                                                    data class.
+
+  Data zone. Vector index, cache, memory and logs. Encrypted at rest and in transit, with keys held by the client.
+
+
+
+ Governance across all zones
+
+  Model registry. Each model            Policy as code. Who may use           Release gate. The evaluation           Audit. Tamper-evident log with
+  approved, licensed, versioned         which model on which data             suite must pass                        retention rules
+Architecture
+
+
+Security architecture
+Request path · where rules are enforced
+
+ App session                Token service                 Gateway                      Guardrails                     Models and tools
+ User signs in to the       Short-lived token with        Checks token and             Screen input,                  Act with the user's
+ existing app               user and roles                policy on every call         validate output                own rights
+
+
+
+                Control services
+
+ Identity provider          Keys and secrets             Policy engine                                                Egress proxy
+                                                                                       Detector models
+ The client's own single    Vault, keys held by          Rules as code,                                               The only route out,
+                                                                                       Personal data, injection
+ sign-on                    the client                   versioned                                                    closed by default
+
+
+
+Evidence
+
+ Audit log                         Client security monitoring             Access reviews                      Incident runbook
+ Append-only: every call           Events forwarded as                    Who may use which model             Revoke keys, close routes,
+ and decision                      they happen                            and data                            trace impact
+Architecture
+
+
+Observability and evaluation architecture
+Emitters                   Collect                     Store                           Use
+
+ Gateway                                                Trace store                     Dashboards
+                                                                                                                      Alerts
+                            Telemetry collector         Every step of                   Per feature, team
+                                                                                                                      Quality, latency, spend
+                            One open format             every request                   and model
+ Agent runtime
+                            for traces, metrics
+                            and logs                    Metrics store                   Live scorers
+                                                                                                                      Cost reports
+ RAG service                Batching and                Latency, tokens,                Sampled answers scored
+                                                                                                                      Charged back by team
+                            sampling                    cost, errors                    for grounding
+ Model servers              Personal data
+                            masked before
+                                                        Log store                       Review queue                  Trace viewer
+                            storage
+ Ingestion                                              Service logs                    People check low scores       Replay any request
+
+
+
+
+Evaluation loop
+                                                                           Offline runner
+ Feedback capture                      Golden set                                                                 Scorecard
+                                                                           Blocks a release that
+ Ratings and edits from users          Questions, expected answers                                                Trend for each release
+                                                                           scores lower
+Closing the gaps · 1
+
+
+Legacy integration architecture
+ Existing application                        Integration layer · built per client                               AI platform · reusable
+
+  User interface                    adds      Assistant widget                                          chat     Assistant API
+  Web, desktop or mobile                      One script tag or frame added to the screens                       Chat endpoint behind the gateway
+
+
+  Application server                 calls    API facade                                               tools     MCP server and agent runtime
+  Business logic                              Clean endpoints over existing functions                            Each tool is one facade endpoint
+
+
+  Database                          reads     Replica reader or change capture                          rows
+  System of record                            Data out with no load on the live system                           Ingestion pipeline
+                                                                                                                 Rows, changes and files become indexed
+  File shares                       reads     File crawler                                              files    chunks with access tags
+  Documents and exports                       Reads each file with its access list
+
+
+  Login system                      trusts    Identity bridge                                          token     Gateway and policy engine
+  Sessions, roles, groups                     Turns an app session into a signed token                           Every call carries the user's identity
+
+No usable APIs: the facade is built first. No single sign-on: the identity bridge is built first. Both come before any AI feature.
+Closing the gaps · 2
+
+
+Structured data access
+ What the service knows                      Query service · called as an MCP tool                         Data and result
+
+  Semantic layer                              1 Route                                                       7 Answer to the agent
+  Business terms and metrics                  A defined metric, or a new question?                          With the SQL shown for audit
+
+
+
+  Schema catalog                              2a Query writer            2b Metric tool                     6 Format
+  Tables, keys, sample queries                Model drafts SQL           Fixed, approved SQL                Rows plus a short summary
+
+
+
+  Access rules                                3 Validate                                                    5 Check the result
+  Allowed tables and columns                  Read-only, allowed tables, row and cost limits                Empty, too large, out of range
+
+
+
+  User identity                               4 Execute                                                     Read replica or warehouse
+  Passed on by the gateway                    Runs as the user, with a timeout                              Never the live database
+
+
+An approved metric is always preferred to generated SQL. Generated SQL is read-only, limited, checked and logged.
+Closing the gaps · 3
+
+
+Deployment topology: cloud
+ Client cloud account · one region, three zones
+
+ Existing app        Private network · no public addresses                                          Managed services
+                                       Kubernetes · managed control plane                            Key management
+  Application         Internal load
+  servers             balancer                                       GPU pool A
+                                        CPU node pool
+                                                                     LLM serving, 1 to N nodes       Secrets manager
+                                        Gateway, agent
+  Database                              runtime, RAG service,
+                                                                     GPU pool B
+                                        MCP server, guardrails                                       Container registry
+                                                                     Embedding and reranker
+  Identity
+  provider                              Batch pool. Ingestion workers and evaluation runs on         Logs and metrics
+                                        spare capacity
+
+
+                                                                                                    Private model endpoint
+                      State database   Vector database      Cache                Object storage     Optional. A vendor's model
+                      Registry, run    Replicas and         Limits and           Documents,         inside this account, opened
+                      state, budgets   daily snapshots      semantic cache       weights, backups   by policy.
+Closing the gaps · 3
+
+
+Deployment topology: on-prem
+ Client data centre · no route to the internet
+
+  One-way import             Kubernetes · three control-plane nodes                          Existing systems
+   Release bundle            Ingress               Control plane        GPU scheduler        Application
+   Images, charts, model     Internal only         Three nodes          Queues and sharing
+   weights
+                                                                                             Database
+                             CPU workers           GPU workers A        GPU workers B
+   Scan and verify
+                             Platform services     LLM serving          Small models
+   Signatures and                                                                            Identity provider
+   checksums
+                             Batch workers         Monitoring           Secrets and keys
+   Internal registry         Ingestion, evals      Metrics and traces   Vault with HSM       Second site
+   Images and
+   model store                                                                               Standby cluster
+                                                                                             Restored from snapshots
+                             Storage and state
+  Updates arrive as signed
+  bundles on an agreed                                                                       Off-site backups
+                             Database cluster      Vector database      Object storage
+  schedule.
+                             Primary and standby   Three replicas       Weights, snapshots   Database, index, config
+Closing the gaps · 3
+
+
+Capacity and sizing method
+01    Measure demand                                                                      Worksheet for one pool         Value
+      Peak users at once × requests per user per minute × tokens per request, in
+      and out.                                                                            Peak users at once             [__]
+
+02    Measure supply                                                                      Requests per user per minute   [__]
+      Tokens per second one GPU node sustains for the chosen model at the
+                                                                                          Tokens per request             [__]
+      target latency. Taken from a load test on the client's hardware, never from
+      a brochure.                                                                         Demand, tokens per second      product ÷ 60
+03    Divide, then add                                                                    Measured supply per node       [__]
+      Nodes for load = demand ÷ supply. Add one node so a failure is not an
+      outage, then headroom for growth.                                                   Nodes for load                 demand ÷ supply
+
+04    Repeat for each pool                                                                Nodes to order                 load + 1 +
+      Chat models, small models, embedding and rerank. Ingestion is sized by                                             headroom
+      backlog and the nightly window.
+
+
+
+
+Bracketed values are filled in during the assessment. No node count is quoted before the load test.
+Closing the gaps · 4
+
+
+Release pipeline and feedback loop
+1 · Versioned in git           2 · Automated checks        3 · Registries             4 · Staged rollout
+
+                                                            Prompt registry            Staging
+ Prompts and tool schemas       Unit and contract tests
+                                                            Every version kept         Full copy, test data
+
+                                Evaluation suite            Model registry             Shadow traffic
+ Routing and policy rules
+                                Score must not drop         Approved models only       Real requests, no replies
+
+                                Safety tests                Image registry             Canary share
+ Service and pipeline code
+                                Injection and data leaks    Scanned and signed         A small part of users
+
+                                                           Signed release             Production
+ Evaluation sets                Cost and latency budget
+                                                           One version of all three   Rollback is one change
+
+
+
+
+                               5 · Feedback loop
+
+ New test cases                 Weekly failure review       User ratings and edits     Traces and live scores
+ Each failure becomes a test    People sort the causes      Captured in the widget     Sampled from production
+Closing the gaps · 5
+
+
+Latency budget and response modes
+ Stage                                     Design target
+                                                                         Mode A: check, then send
+ Screen the input                          50 ms                         The whole answer is written and checked before the user sees it. Safest. The
+                                                                         user waits for the full answer.
+ Embed the query                           30 ms
+                                                                         Use for: anything that advises, decides or acts.
+ Hybrid search                             70 ms
+
+ Rerank                                    150 ms                        Mode B: stream, then verify
+ Model starts answering                    500 ms                        Words appear as they are written. The check runs at the end and can flag or
+                                                                         withdraw the answer. Fastest. A wrong sentence may be seen briefly.
+ Time to the first word                    800 ms                        Use for: internal search and drafting.
+
+ Hallucination check, at the end           500 ms
+
+
+
+
+Targets are design goals to confirm in load testing on the client's hardware. They are not measurements.
+Closing the gaps · 6
+
+
+Cost model
+       Cost per month                                                              Worksheet                                        Value
+
+                                         Vendor API                                GPU and platform cost per month                  [__]
+
+                                                                                   Run and support cost per month                   [__]
+
+        Self-hosted                                    A node is added             API price for a typical request                  [__]
+
+                                                                                   Break-even requests per month                    fixed cost ÷ API price
+
+                                   Break-even                                      Client's forecast requests per month             [__]
+
+                                                                                 Self-hosted is a fixed cost: hardware, platform and the people who run it.
+                                                      Requests per month
+                                                                                 An API is a variable cost: a price for every request.
+
+
+
+
+The chart shows the shape only. Cost is one input: data control, latency and model quality can settle the choice first.
+Closing the gaps · 7
+
+
+Fine-tuning pipeline
+1 · Data                             2 · Training                          3 · Release gate                        4 · Serving
+
+ Approved request logs                 Pinned base model                    Evaluation against base                 Model server
+ Masked, with consent                  From the model registry              Must beat it on held-out                Loads adapter on the base
+
+                                       Adapter training job                 Safety and leak tests                   Gateway route
+ Expert-labelled examples
+                                       Base weights stay frozen             No training data echoed                 Only for its own task
+
+ Dataset builder                       Off-peak GPU pool                                                            Live monitoring
+                                                                            Human approval
+ Clean, split, hold out                Nights and weekends                                                          Scores against the base
+
+                                       Experiment tracker                   Adapter registry                        Rollback to base
+ Versioned dataset store
+                                       Settings and scores                  Linked to its base                      One routing change
+
+
+
+
+Tune only when all three hold
+A measured task has stopped improving after       There are enough approved examples to train         Someone owns retraining every time the base
+retrieval and prompt work.                        on and to test with.                                model changes.
+Closing the gaps · 8
+
+
+Team and operating model
+ Role                                 During the build                                    Once it is running
+
+ Solution architect                   Owns the design and the client's security review    Quarterly review of cost, quality and roadmap
+
+ Platform engineer                    Cluster, GPU serving, deployment packaging          On-call, upgrades, capacity changes
+
+ Integration engineer                 API facade, MCP server, identity bridge             New tools and connectors
+
+ AI engineer                          Retrieval, prompts, orchestration, evaluation set   Evaluation upkeep, model and prompt changes
+
+ Data engineer                        Ingestion pipelines and access-tag mapping          Pipeline health, new sources
+
+ From the client                      Product owner, subject experts, security lead       Owner for feedback review and access reviews
+
+
+One person can hold two roles on a first engagement. Nobody can skip the platform role: GPUs on Kubernetes need a specialist.
+
+
+
+
+Headcount, on-call hours and response times are set per contract: [to be agreed].
+Delivery
+
+
+Scaling in three stages
+  Stage 1                                      Stage 2                                    Stage 3
+
+  Pilot                                        Production                                 Platform
+  One GPU node or a private endpoint.          Kubernetes with autoscaling. A redundant   A GPU pool shared across teams. Idle
+  Containers on a single host. One use case.   gateway. A second model tier for           capacity scales to zero. Adapters tuned on
+                                               harder tasks.                              the client's own domain.
+
+
+  Move on when                                 Move on when
+  Evaluation scores hold and people use it     A second team or application asks          From here
+  every week.                                  for access.                                Capacity follows measured demand.
+
+
+
+The architecture is the same at every stage. Only the footprint changes.
+Delivery
+
+
+Engagement model (proposed)
+  [2 weeks]                                  [6 to 8 weeks]                            [per use case]                [monthly]
+
+  Assess                                     Foundation                                Expand                        Run
+  Application review, data                   Gateway, search, model                    Further use cases and agent   Monitoring, model updates,
+  map, shortlist of use cases,               serving and controls, with                tools built on the same       capacity changes, upkeep of
+  hardware sizing.                           one use case live.                        foundation.                   the test suite.
+
+                                             Output: one feature in                    Output: each new
+  Output: a costed plan                      production                                feature, faster               Output: recurring revenue
+
+
+
+
+Durations in brackets are starting proposals for discussion. Pricing is not yet set.
+For review
+
+
+Open questions for review
+ 01 Which industry do we lead with?                              02 Who is the first reference client?
+     A general offer competes with everyone. A focused one can       One named result will sell more than this deck.
+     be found.
+
+
+
+ 03 Which use case opens the conversation?                       04 Fixed price, or time and materials?
+     Buyers fund an outcome. The foundation comes with it.           Fixed price for Assess and Foundation is easier to buy and riskier
+                                                                     to deliver.
+
+
+
+ 05 Do we run the platform after go-live?                        06 Who supplies GPUs when the client has none?
+     Recurring income, in exchange for an on-call commitment.        The client buys, we resell, or we partner with a host.
+
