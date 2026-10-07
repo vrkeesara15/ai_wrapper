@@ -19,7 +19,7 @@ import os
 import typer
 
 from aiready import __version__
-from aiready.cli import governance, ops
+from aiready.cli import apps, governance, ops
 
 os.environ.setdefault("AIREADY_SETUP_LOGGING", "0")
 os.environ.setdefault("AIREADY_CONFIG_WATCH", "0")
@@ -29,6 +29,7 @@ app = typer.Typer(name="aiready", help="AI-Ready platform operator CLI.", no_arg
 
 app.command("serve")(ops.serve)
 app.add_typer(ops.config_app, name="config")
+app.add_typer(apps.app_app, name="app")
 app.add_typer(governance.policy_app, name="policy")
 app.add_typer(governance.token_app, name="token")
 app.add_typer(governance.audit_app, name="audit")
