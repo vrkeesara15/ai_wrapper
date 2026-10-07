@@ -20,7 +20,7 @@ observability:
     # policy that admits nothing but the platform's pods, set allow_anonymous: true.
     allow_anonymous: false
     max_batch: 5000
-    capture_local: false       # single-process pilot: also store this process's own spans
+    capture_local: ${AIREADY_OBS_CAPTURE_LOCAL:-true}   # store the spans of the process observability runs in (all of them in the single-process pilot)
     flush_interval_seconds: 2
 
   # Latency budget (ms) from the "Latency budget and response modes" slide. Design targets to confirm in

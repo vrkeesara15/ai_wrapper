@@ -33,6 +33,7 @@ from typing import Any
 from aiready.cache.semantic import CacheScope, ExactCache, SemanticCache
 from aiready.core.audit import get_audit
 from aiready.core.config import ConfigStore, get_config
+from aiready.core.config import get_config
 from aiready.core.errors import (
     AIReadyError,
     AuthenticationError,
@@ -620,10 +621,14 @@ class GatewayService:
         token = set_trace_id(ctx.trace_id) if current_trace_id() is None else None
         resp: ChatResponse | None = None
         try:
-            with span("gateway.request", feature=ctx.feature, user=principal.sub):
+            with span("gateway.request", feature=ctx.feature, user=principal.sub) as root:
                 await self._authenticate(ctx)
                 await self._limit(ctx)
                 await self._screen(ctx)
+                if ctx.req is not None and get_config().get("gateway.usage.record_request_in_trace", True):
+                    # the screened (masked) request, so an admin can replay it from the trace viewer;
+                    # the trace store masks personal data again before storage
+                    root.set(request=ctx.req.model_dump(mode="json", exclude_none=True, exclude={"metadata"}))
                 resp = await self._reuse(ctx)
                 if resp is None:
                     await self._route(ctx)

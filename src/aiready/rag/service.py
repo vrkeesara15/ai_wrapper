@@ -645,6 +645,39 @@ class RagServiceImpl:
             unsupported=grounding.unsupported if grounding else [], cached=ans.cached, model=ans.model,
             prompt=run.prompt.ref if run.prompt else None, fallbacks=run.fallbacks, stage_ms=run.stage_ms,
             over_budget=run.over_budget, session_id=run.q.session_id, feature=run.q.feature)
+        self._submit_for_scoring(run, ans)
+
+    def _submit_for_scoring(self, run: _Run, ans: RagAnswer) -> None:
+        """Hand the answer to the live scorers (observability samples and scores it for grounding and
+        citations; low scores go to the review queue). Best-effort and off the request path."""
+        if not get_config().get("rag.live_scoring", True) or ans.cached:
+            return
+        try:
+            from aiready.observability.scoring import AnswerSample, Passage
+
+            sample = AnswerSample(
+                trace_id=run.trace_id or "", span="rag.answer", ts=time.time(), question=run.question,
+                answer=ans.answer, found=ans.found, app=run.principal.app, feature=run.q.feature,
+                model=ans.model or "-", user=run.principal.sub,
+                passages=[Passage(id=h.chunk.id, doc_id=h.chunk.doc_id, text=h.chunk.text, marker=str(i))
+                          for i, h in enumerate(ans.passages, start=1)],
+                cited_sources=sorted({c.doc_id for c in ans.citations}),
+                cited_chunks=[c.chunk_id for c in ans.citations])
+            obs = connect("observability")
+        except Exception as exc:  # observability not deployed: scoring is optional, answering is not
+            log.debug("live scoring unavailable: %s", exc)
+            return
+
+        async def submit() -> None:
+            try:
+                await obs.submit_answer(sample, run.principal)
+            except Exception as exc:
+                log.debug("live scoring submit failed: %s", exc)
+
+        try:
+            asyncio.get_running_loop().create_task(submit())
+        except RuntimeError:
+            pass
 
     # ================================================================== helpers
     def _collection(self, q: RagQuery, p: Principal) -> str:
