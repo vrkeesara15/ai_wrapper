@@ -1,0 +1,41 @@
+# =============================================================================
+# Semantic layer for the query service: business terms and APPROVED metrics.
+# An approved metric is always preferred to generated SQL. Its SQL is fixed and reviewed; parameters are
+# bound (:name), never formatted into the text. :tenant, :user and :app are bound from the caller's identity.
+# Row filters from query.access.row_filters (e.g. tenant isolation) are still applied on top.
+# =============================================================================
+semantic_layer:
+  terms:
+    open claim: A claim whose status is 'open' (not yet approved, paid or rejected)
+    paid claim: A claim whose status is 'paid'
+    region: The sales region of the claim (north, south, east, west)
+
+  metrics:
+    open_claims_by_region:
+      description: Number of open claims per region
+      sql: |
+        SELECT region, COUNT(*) AS open_claims
+        FROM claims
+        WHERE status = 'open'
+        GROUP BY region
+        ORDER BY region
+      allowed_roles: [analyst, claims_manager]
+      synonyms: ["open claims by region", "open claims per region", "how many open claims in each region"]
+      expected_range:
+        open_claims: {min: 0}
+      owner: claims-platform
+
+    paid_amount_between:
+      description: Total amount paid on claims filed between two dates
+      sql: |
+        SELECT COALESCE(SUM(amount), 0) AS total_paid, COUNT(*) AS paid_claims
+        FROM claims
+        WHERE status = 'paid' AND created_at >= :start_date AND created_at < :end_date
+      params:
+        start_date: {type: date, required: true, description: First day (inclusive)}
+        end_date: {type: date, required: true, description: Last day (exclusive)}
+      allowed_roles: [claims_manager]
+      synonyms: ["total paid amount", "amount paid on claims", "paid claims total"]
+      expected_range:
+        total_paid: {min: 0}
+      owner: finance

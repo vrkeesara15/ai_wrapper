@@ -1,0 +1,82 @@
+{{- /* prometheus-operator resources (toggle): ServiceMonitors, alert rules, Grafana dashboard. */ -}}
+{{- $mon := .Values.monitoring }}
+{{- if $mon.serviceMonitor.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: aiready-services
+  labels:
+    {{- include "aiready.labels" (dict "root" . "name" "aiready-services" "zone" "platform") | nindent 4 }}
+    {{- with $mon.serviceMonitor.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  # job="aiready" for every platform service, so alert rules match compose and Kubernetes alike.
+  jobLabel: aiready.io/job
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      aiready.io/metrics: "true"
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: {{ $mon.serviceMonitor.interval }}
+      honorLabels: true
+{{- if .Values.modelServing.enabled }}
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: aiready-model-servers
+  labels:
+    {{- include "aiready.labels" (dict "root" . "name" "aiready-model-servers" "zone" "model") | nindent 4 }}
+    {{- with $mon.serviceMonitor.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      aiready.io/model-metrics: "true"
+  targetLabels: [aiready.io/pool]
+  endpoints:
+    # vLLM: tokens/s, queue time, KV-cache usage on the API port.
+    - port: http
+      path: /metrics
+      interval: {{ $mon.serviceMonitor.interval }}
+    # TEI publishes metrics on a separate port (absent on vLLM Services, so it is simply skipped there).
+    - port: metrics
+      path: /metrics
+      interval: {{ $mon.serviceMonitor.interval }}
+{{- end }}
+{{- end }}
+{{- if $mon.prometheusRule.enabled }}
+---
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: aiready-alerts
+  labels:
+    {{- include "aiready.labels" (dict "root" . "name" "aiready-alerts" "zone" "platform") | nindent 4 }}
+    {{- with $mon.prometheusRule.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  {{- /* Same file as deploy/observability/prometheus/rules (one source of truth); not templated. */}}
+{{ .Files.Get "files/observability/aiready-alerts.yml" | indent 2 }}
+{{- end }}
+{{- if $mon.grafanaDashboard.enabled }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: aiready-grafana-dashboards
+  labels:
+    {{- include "aiready.labels" (dict "root" . "name" "grafana-dashboards" "zone" "platform") | nindent 4 }}
+    {{- with $mon.grafanaDashboard.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+data:
+  aiready-overview.json: |-
+{{ .Files.Get "files/observability/aiready-overview.json" | indent 4 }}
+{{- end }}

@@ -1,0 +1,261 @@
+{{- /*
+Zone network policies ("Security and governance"):
+  default deny (ingress + egress) for every pod in the release namespace, then per zone:
+    app       <- ingress controller, existing app CIDRs, platform    -> platform, app CIDRs (components with reachesApp)
+    platform  <- app, platform                                         -> platform, model, data, egress proxy (egress: true)
+    model     <- platform                                              -> nothing at all (no DNS, no internet)
+    data      <- platform (and data peers)                             -> data peers
+    egress    <- platform pods labelled aiready.io/egress=true         -> internet :443 only
+  plus DNS for every zone except model, and Prometheus scraping from the monitoring namespace.
+*/ -}}
+{{- if .Values.networkPolicy.enabled }}
+{{- $np := .Values.networkPolicy }}
+{{- $inst := .Release.Name }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: aiready-default-deny
+  labels:
+    {{- include "aiready.labels" (dict "root" . "name" "default-deny" "zone" "all") | nindent 4 }}
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: aiready-allow-dns
+  labels:
+    {{- include "aiready.labels" (dict "root" . "name" "allow-dns" "zone" "all") | nindent 4 }}
+spec:
+  podSelector:
+    matchExpressions:
+      - {key: aiready.io/zone, operator: In, values: [app, platform, data, egress]}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ $np.dnsNamespace }}
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - {protocol: UDP, port: 53}
+        - {protocol: TCP, port: 53}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: aiready-allow-monitoring
+  labels:
+    {{- include "aiready.labels" (dict "root" . "name" "allow-monitoring" "zone" "all") | nindent 4 }}
+spec:
+  # Prometheus scrapes /metrics on every zone, including the model zone (ingress only - no egress opened).
+  podSelector: {}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ $np.monitoringNamespace }}
+---
+# ---------------------------------------------------------------------------------------------- app zone
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: aiready-zone-app
+  labels:
+    {{- include "aiready.labels" (dict "root" . "name" "zone-app" "zone" "app") | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      aiready.io/zone: app
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ $np.ingressControllerNamespace }}
+        - podSelector:
+            matchExpressions:
+              - {key: aiready.io/zone, operator: In, values: [app, platform]}
+        {{- range $np.appCidrs }}
+        - ipBlock: {cidr: {{ . }}}
+        {{- end }}
+  egress:
+    - to:
+        - podSelector:
+            matchExpressions:
+              - {key: aiready.io/zone, operator: In, values: [app, platform]}
+---
+# ---------------------------------------------------------------------------------------------- platform zone
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: aiready-zone-platform
+  labels:
+    {{- include "aiready.labels" (dict "root" . "name" "zone-platform" "zone" "platform") | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      aiready.io/zone: platform
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - podSelector:
+            matchExpressions:
+              - {key: aiready.io/zone, operator: In, values: [app, platform]}
+    {{- if .Values.components.gateway.ingress.enabled }}
+    # The gateway is also published on the internal ingress for applications that call it directly.
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ $np.ingressControllerNamespace }}
+        {{- range $np.appCidrs }}
+        - ipBlock: {cidr: {{ . }}}
+        {{- end }}
+      ports:
+        - {protocol: TCP, port: {{ .Values.components.gateway.port }}}
+    {{- end }}
+  egress:
+    - to:
+        - podSelector:
+            matchExpressions:
+              - {key: aiready.io/zone, operator: In, values: [app, platform, model, data]}
+    # Telemetry export (otel-collector -> trace/log stores) and Prometheus queries by the platform.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ $np.monitoringNamespace }}
+    {{- if $np.dataCidrs }}
+    - to:
+        {{- range $np.dataCidrs }}
+        - ipBlock: {cidr: {{ . }}}
+        {{- end }}
+      ports:
+        {{- range $np.dataPorts }}
+        - {protocol: TCP, port: {{ . }}}
+        {{- end }}
+    {{- end }}
+---
+# Components that read the existing application (facade, read replica, file shares, IdP).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: aiready-reaches-app
+  labels:
+    {{- include "aiready.labels" (dict "root" . "name" "reaches-app" "zone" "all") | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      aiready.io/reaches-app: "true"
+  policyTypes: [Egress]
+  {{- if $np.appCidrs }}
+  egress:
+    - to:
+        {{- range $np.appCidrs }}
+        - ipBlock: {cidr: {{ . }}}
+        {{- end }}
+      ports:
+        {{- range $np.appPorts }}
+        - {protocol: TCP, port: {{ . }}}
+        {{- end }}
+  {{- else }}
+  egress: []
+  {{- end }}
+{{- if .Values.egressProxy.enabled }}
+---
+# Only pods labelled aiready.io/egress=true may talk to the proxy; nothing else in the zone gets a route out.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: aiready-uses-egress-proxy
+  labels:
+    {{- include "aiready.labels" (dict "root" . "name" "uses-egress-proxy" "zone" "platform") | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      aiready.io/egress: "true"
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              aiready.io/zone: egress
+      ports:
+        - {protocol: TCP, port: 3128}
+---
+# ---------------------------------------------------------------------------------------------- egress zone
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: aiready-zone-egress
+  labels:
+    {{- include "aiready.labels" (dict "root" . "name" "zone-egress" "zone" "egress") | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      aiready.io/zone: egress
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              aiready.io/egress: "true"
+      ports:
+        - {protocol: TCP, port: 3128}
+  egress:
+    # The internet on 443 only - never private ranges or the cloud metadata endpoint.
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except: [10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10, 169.254.0.0/16]
+      ports:
+        - {protocol: TCP, port: 443}
+{{- end }}
+---
+# ---------------------------------------------------------------------------------------------- model zone
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: aiready-zone-model
+  labels:
+    {{- include "aiready.labels" (dict "root" . "name" "zone-model" "zone" "model") | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      aiready.io/zone: model
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              aiready.io/zone: platform
+  # No egress rules: no outbound network at all (weights come from the mounted model store).
+  egress: []
+---
+# ---------------------------------------------------------------------------------------------- data zone
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: aiready-zone-data
+  labels:
+    {{- include "aiready.labels" (dict "root" . "name" "zone-data" "zone" "data") | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      aiready.io/zone: data
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - podSelector:
+            matchExpressions:
+              - {key: aiready.io/zone, operator: In, values: [platform, data]}
+  egress:
+    # Replication between data-zone peers (e.g. qdrant cluster port 6335) only.
+    - to:
+        - podSelector:
+            matchLabels:
+              aiready.io/zone: data
+{{- end }}

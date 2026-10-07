@@ -1,0 +1,64 @@
+# Policy domain: data - retrieval and data access by access groups.
+# Item-level filtering happens at search time with access tags; these rules decide whether the principal
+# may read the collection / source at all and what obligations apply.
+policies:
+  data:
+    version: 1.0.0
+    description: Data reads, search and RAG.
+    rules:
+      - id: data.read.collection
+        description: Signed-in users may query a collection; results are filtered by their access groups.
+        action: data.read
+        effect: allow
+        when:
+          principal.authenticated: true
+          resource.access_tags: {exists: false}
+
+      - id: data.read.access_tags
+        description: A tagged resource is readable when one of its tags is in the principal's access groups.
+        action: data.read
+        effect: allow
+        when:
+          resource.access_tags: {any_in: {ref: principal.access_groups}}
+
+      - id: data.read.restricted
+        description: Restricted data needs the restricted-data-reader role.
+        action: data.read
+        effect: deny
+        when:
+          any:
+            - resource.data_class: restricted
+            - context.data_class: restricted
+          not:
+            principal.roles: {contains: restricted-data-reader}
+
+      - id: data.read.personal_mask
+        description: Personal data is masked for readers without the pii-reader role.
+        action: data.read
+        effect: obligate
+        when:
+          any:
+            - resource.data_class: personal
+            - context.data_class: personal
+          not:
+            principal.roles: {contains: pii-reader}
+        obligations:
+          mask_pii: true
+
+      - id: data.rag.answer
+        description: Signed-in users may ask the assistant; answers must cite their sources.
+        action: ["rag.*", "search.*"]
+        effect: allow
+        when:
+          principal.authenticated: true
+        obligations:
+          require_citations: true
+
+      - id: data.trace.replay
+        description: Replaying someone else's request masks their personal data.
+        action: trace.replay
+        effect: allow
+        when:
+          principal.authenticated: true
+        obligations:
+          mask_pii: true

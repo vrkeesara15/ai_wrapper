@@ -1,0 +1,455 @@
+# AI-Ready - Stage 1 "Pilot": every service as a container on one host.
+#
+#   make run-pilot        # mock models, no GPU
+#   make run-pilot-gpu    # + vLLM chat model, TEI embeddings and reranker on the host GPU (profile "gpu")
+#   make run-demo         # + the sample legacy application (profile "demo")
+#
+# The architecture is the same as in production; only the footprint changes. Zones from the
+# "Security and governance" slide are modelled as networks:
+#
+#   app-zone       the existing application, the assistant widget/API, identity bridge and API facade.
+#                  The only network with published ports (bound to AIREADY_BIND, 127.0.0.1 by default).
+#   platform-zone  gateway, guardrails, governance, retrieval, agents, MCP, ingestion, observability.
+#                  internal: no route out. Outbound calls go through the egress proxy.
+#   model-zone     model servers. internal: no outbound network at all; weights are pre-staged on disk.
+#   data-zone      postgres, redis, qdrant. internal. Only platform services attach.
+#   egress-zone    the egress proxy's outside leg - the only route to the internet, default deny.
+#
+# Pilot caveat: a container that publishes a port also sits on the (non-internal) app-zone bridge, so the
+# host firewall (DOCKER-USER chain) should drop outbound traffic from that bridge except to the proxy.
+# Kubernetes NetworkPolicies (Helm chart) enforce the same zones strictly in stages 2 and 3.
+
+name: aiready
+
+x-hardening: &hardening
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: ["no-new-privileges:true"]
+  tmpfs: ["/tmp:size=256m"]
+  restart: unless-stopped
+  logging:
+    driver: json-file
+    options: {max-size: "20m", max-file: "5"}
+
+x-env: &env
+  # Each service writes its own audit hash chain (one writer per chain) under the shared data volume;
+  # `aiready audit verify` checks every chain file.
+  AIREADY_CONFIG_DIR: /etc/aiready/config
+  AIREADY_CONFIG_OVERLAY: /etc/aiready/overlay
+  AIREADY_ENV: ${AIREADY_ENV:-pilot}
+  AIREADY_LOG_LEVEL: ${AIREADY_LOG_LEVEL:-INFO}
+  AIREADY_JSON_LOGS: "1"
+  AIREADY_SECRET_DIRS: /run/secrets
+  OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
+  OTEL_EXPORTER_OTLP_PROTOCOL: grpc
+  AIREADY_TRACE_COLLECTOR_URL: http://observability:8170
+  # Model endpoints (OpenAI-compatible). Mock server by default; `make run-pilot-gpu` points them at vLLM/TEI.
+  AIREADY_MODEL_CHAT_URL: ${AIREADY_MODEL_CHAT_URL:-http://mock-models:8200/v1}
+  AIREADY_MODEL_SMALL_URL: ${AIREADY_MODEL_SMALL_URL:-http://mock-models:8200/v1}
+  AIREADY_MODEL_EMBED_URL: ${AIREADY_MODEL_EMBED_URL:-http://mock-models:8200/v1}
+  AIREADY_MODEL_RERANK_URL: ${AIREADY_MODEL_RERANK_URL:-http://mock-models:8200/v1}
+  AIREADY_MODEL_GUARD_URL: ${AIREADY_MODEL_GUARD_URL:-http://mock-models:8200/v1}
+  EMBEDDING_URL: ${AIREADY_MODEL_EMBED_URL:-http://mock-models:8200/v1}
+  RERANK_URL: ${AIREADY_MODEL_RERANK_URL:-http://mock-models:8200/v1}
+  # State backends (see config/platform.yaml: state, kv, queue). Several processes share them, so the
+  # pilot uses postgres + redis rather than the single-process sqlite/memory defaults.
+  AIREADY_STATE_URL: postgresql+psycopg://aiready:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/aiready
+  AIREADY_KV_TYPE: redis
+  AIREADY_QUEUE_TYPE: redis
+  AIREADY_REDIS_URL: redis://:${REDIS_PASSWORD:?set REDIS_PASSWORD in .env}@redis:6379/0
+  QDRANT_URL: http://qdrant:6333
+  QDRANT_API_KEY: ${QDRANT_API_KEY:-}
+  LEGACY_APP_URL: ${LEGACY_APP_URL:-http://legacy-app:8000}
+  # Outbound calls (vendor APIs, SaaS connectors) leave only through the egress proxy.
+  HTTPS_PROXY: http://egress-proxy:3128
+  HTTP_PROXY: http://egress-proxy:3128
+  NO_PROXY: localhost,127.0.0.1,gateway,gateway-admin,guardrails,governance,embedding,rerank,search,rag,memory,query,agents,assistant,mcp,identity-bridge,facade,ingestion,observability,mock-models,vllm-chat,tei-embed,tei-rerank,redis,postgres,qdrant,otel-collector,legacy-app
+
+x-platform: &platform
+  <<: *hardening
+  image: ${AIREADY_IMAGE:-aiready/aiready}:${AIREADY_VERSION:-dev}
+  build:
+    context: ../..
+    dockerfile: Dockerfile
+  user: "10001:10001"
+  volumes:
+    - ../../config:/etc/aiready/config:ro
+    - ../config-overlays/compose:/etc/aiready/overlay:ro
+    - aiready-data:/var/lib/aiready
+  secrets: [token_signing_key, audit_hmac_key, llm_api_key, service_token_key]
+  networks: [platform-zone, data-zone]
+  depends_on:
+    postgres: {condition: service_healthy}
+    redis: {condition: service_healthy}
+    otel-collector: {condition: service_started}
+
+services:
+  # ================================================================================ platform zone
+  gateway:
+    <<: *platform
+    command: ["uvicorn", "aiready.gateway.api:create_app", "--factory", "--host", "0.0.0.0", "--port", "8080"]
+    environment: {<<: *env, AIREADY_SERVICE: gateway, AIREADY_PORT: "8080", AIREADY_AUDIT_PATH: /var/lib/aiready/audit/gateway.jsonl}
+    networks: [app-zone, platform-zone, model-zone, data-zone]
+    ports: ["${AIREADY_BIND:-127.0.0.1}:8080:8080"]
+
+  gateway-admin:
+    <<: *platform
+    command: ["uvicorn", "aiready.gateway.admin:create_admin_app", "--factory", "--host", "0.0.0.0", "--port", "8081"]
+    environment: {<<: *env, AIREADY_SERVICE: gateway-admin, AIREADY_PORT: "8081", AIREADY_AUDIT_PATH: /var/lib/aiready/audit/gateway-admin.jsonl}
+    # Control plane: reachable from the host loopback only, never from the app zone.
+    networks: [app-zone, platform-zone, data-zone]
+    ports: ["127.0.0.1:8081:8081"]
+
+  guardrails:
+    <<: *platform
+    command: ["uvicorn", "aiready.guardrails.api:create_app", "--factory", "--host", "0.0.0.0", "--port", "8090"]
+    environment: {<<: *env, AIREADY_SERVICE: guardrails, AIREADY_PORT: "8090", AIREADY_AUDIT_PATH: /var/lib/aiready/audit/guardrails.jsonl}
+
+  governance:
+    <<: *platform
+    command: ["uvicorn", "aiready.governance.api:create_app", "--factory", "--host", "0.0.0.0", "--port", "8091"]
+    environment: {<<: *env, AIREADY_SERVICE: governance, AIREADY_PORT: "8091", AIREADY_AUDIT_PATH: /var/lib/aiready/audit/governance.jsonl}
+
+  embedding:
+    <<: *platform
+    command: ["uvicorn", "aiready.embedding.api:create_app", "--factory", "--host", "0.0.0.0", "--port", "8100"]
+    environment: {<<: *env, AIREADY_SERVICE: embedding, AIREADY_PORT: "8100", AIREADY_AUDIT_PATH: /var/lib/aiready/audit/embedding.jsonl}
+    networks: [platform-zone, model-zone, data-zone]
+
+  rerank:
+    <<: *platform
+    command: ["uvicorn", "aiready.rerank.api:create_app", "--factory", "--host", "0.0.0.0", "--port", "8101"]
+    environment: {<<: *env, AIREADY_SERVICE: rerank, AIREADY_PORT: "8101", AIREADY_AUDIT_PATH: /var/lib/aiready/audit/rerank.jsonl}
+    networks: [platform-zone, model-zone, data-zone]
+
+  search:
+    <<: *platform
+    command: ["uvicorn", "aiready.search.api:create_app", "--factory", "--host", "0.0.0.0", "--port", "8102"]
+    environment: {<<: *env, AIREADY_SERVICE: search, AIREADY_PORT: "8102", AIREADY_AUDIT_PATH: /var/lib/aiready/audit/search.jsonl}
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
+      qdrant: {condition: service_started}
+
+  rag:
+    <<: *platform
+    command: ["uvicorn", "aiready.rag.api:create_app", "--factory", "--host", "0.0.0.0", "--port", "8110"]
+    environment: {<<: *env, AIREADY_SERVICE: rag, AIREADY_PORT: "8110", AIREADY_AUDIT_PATH: /var/lib/aiready/audit/rag.jsonl}
+
+  memory:
+    <<: *platform
+    command: ["uvicorn", "aiready.memory.api:create_app", "--factory", "--host", "0.0.0.0", "--port", "8111"]
+    environment: {<<: *env, AIREADY_SERVICE: memory, AIREADY_PORT: "8111", AIREADY_AUDIT_PATH: /var/lib/aiready/audit/memory.jsonl}
+
+  query:
+    <<: *platform
+    command: ["uvicorn", "aiready.query.api:create_app", "--factory", "--host", "0.0.0.0", "--port", "8112"]
+    environment: {<<: *env, AIREADY_SERVICE: query, AIREADY_PORT: "8112", AIREADY_AUDIT_PATH: /var/lib/aiready/audit/query.jsonl}
+
+  agents:
+    <<: *platform
+    command: ["uvicorn", "aiready.agents.api:create_app", "--factory", "--host", "0.0.0.0", "--port", "8120"]
+    environment: {<<: *env, AIREADY_SERVICE: agents, AIREADY_PORT: "8120", AIREADY_AUDIT_PATH: /var/lib/aiready/audit/agents.jsonl}
+
+  mcp:
+    <<: *platform
+    command: ["uvicorn", "aiready.mcp.api:create_app", "--factory", "--host", "0.0.0.0", "--port", "8140"]
+    environment: {<<: *env, AIREADY_SERVICE: mcp, AIREADY_PORT: "8140", AIREADY_AUDIT_PATH: /var/lib/aiready/audit/mcp.jsonl}
+    # Tools call the API facade in the app zone.
+    networks: [app-zone, platform-zone, data-zone]
+
+  ingestion:
+    <<: *platform
+    command: ["uvicorn", "aiready.ingestion.api:create_app", "--factory", "--host", "0.0.0.0", "--port", "8160"]
+    environment: {<<: *env, AIREADY_SERVICE: ingestion, AIREADY_PORT: "8160", AIREADY_AUDIT_PATH: /var/lib/aiready/audit/ingestion.jsonl}
+    volumes:
+      - ../../config:/etc/aiready/config:ro
+      - ../config-overlays/compose:/etc/aiready/overlay:ro
+      - aiready-data:/var/lib/aiready
+      - ../../examples/legacy_app/docs:/srv/sources/legacy_docs:ro
+
+  ingestion-worker:
+    <<: *platform
+    command: ["python", "-m", "aiready.ingestion.worker"]
+    environment: {<<: *env, AIREADY_SERVICE: ingestion-worker, AIREADY_AUDIT_PATH: /var/lib/aiready/audit/ingestion-worker.jsonl}
+    healthcheck: {disable: true}
+    volumes:
+      - ../../config:/etc/aiready/config:ro
+      - ../config-overlays/compose:/etc/aiready/overlay:ro
+      - aiready-data:/var/lib/aiready
+      - ../../examples/legacy_app/docs:/srv/sources/legacy_docs:ro
+    # The worker reads the legacy app's database replica / files through the app zone.
+    networks: [app-zone, platform-zone, data-zone]
+
+  observability:
+    <<: *platform
+    command: ["uvicorn", "aiready.observability.api:create_app", "--factory", "--host", "0.0.0.0", "--port", "8170"]
+    environment: {<<: *env, AIREADY_SERVICE: observability, AIREADY_PORT: "8170", AIREADY_AUDIT_PATH: /var/lib/aiready/audit/observability.jsonl}
+
+  # ================================================================================ app zone (integration layer)
+  assistant:
+    <<: *platform
+    command: ["uvicorn", "aiready.assistant.api:create_app", "--factory", "--host", "0.0.0.0", "--port", "8130"]
+    environment: {<<: *env, AIREADY_SERVICE: assistant, AIREADY_PORT: "8130", AIREADY_AUDIT_PATH: /var/lib/aiready/audit/assistant.jsonl}
+    networks: [app-zone, platform-zone, data-zone]
+    ports: ["${AIREADY_BIND:-127.0.0.1}:8130:8130"]
+
+  identity-bridge:
+    <<: *platform
+    command: ["uvicorn", "aiready.integration.bridge_api:create_app", "--factory", "--host", "0.0.0.0", "--port", "8150"]
+    environment: {<<: *env, AIREADY_SERVICE: identity-bridge, AIREADY_PORT: "8150", AIREADY_AUDIT_PATH: /var/lib/aiready/audit/identity-bridge.jsonl}
+    networks: [app-zone, platform-zone, data-zone]
+    ports: ["${AIREADY_BIND:-127.0.0.1}:8150:8150"]
+
+  facade:
+    <<: *platform
+    command: ["uvicorn", "aiready.integration.facade_api:create_app", "--factory", "--host", "0.0.0.0", "--port", "8151"]
+    environment: {<<: *env, AIREADY_SERVICE: facade, AIREADY_PORT: "8151", AIREADY_AUDIT_PATH: /var/lib/aiready/audit/facade.jsonl}
+    networks: [app-zone, platform-zone, data-zone]
+
+  # ================================================================================ model zone
+  mock-models:
+    <<: *platform
+    command: ["uvicorn", "aiready.models.mock_server:create_app", "--factory", "--host", "0.0.0.0", "--port", "8200"]
+    environment: {<<: *env, AIREADY_SERVICE: mock-models, AIREADY_PORT: "8200", AIREADY_AUDIT_PATH: /var/lib/aiready/audit/mock-models.jsonl}
+    secrets: []
+    networks: [model-zone]
+    depends_on: {}
+
+  vllm-chat:
+    <<: *hardening
+    profiles: [gpu]
+    image: ${VLLM_IMAGE:-vllm/vllm-openai:v0.6.4}
+    read_only: false            # vLLM compiles kernels into its cache directory
+    command:
+      - --model=/models/${CHAT_MODEL_DIR:-chat}
+      - --served-model-name=${CHAT_MODEL_NAME:-chat}
+      - --enable-prefix-caching
+      - --max-model-len=${CHAT_MAX_MODEL_LEN:-8192}
+      - --gpu-memory-utilization=${CHAT_GPU_MEMORY_UTILIZATION:-0.85}
+      - --disable-log-requests
+    environment:
+      HF_HUB_OFFLINE: "1"
+      TRANSFORMERS_OFFLINE: "1"
+      VLLM_NO_USAGE_STATS: "1"
+      DO_NOT_TRACK: "1"
+    volumes:
+      - ${MODEL_STORE_DIR:-./models}:/models:ro
+    ipc: host
+    networks: [model-zone]
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=2)"]
+      interval: 30s
+      timeout: 5s
+      start_period: 300s
+      retries: 3
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["${CHAT_GPU_DEVICE:-0}"]
+              capabilities: [gpu]
+
+  tei-embed:
+    <<: *hardening
+    profiles: [gpu]
+    image: ${TEI_IMAGE:-ghcr.io/huggingface/text-embeddings-inference:1.5}
+    read_only: false
+    command: ["--model-id", "/models/${EMBED_MODEL_DIR:-embed}", "--max-batch-tokens", "16384"]
+    environment: {HF_HUB_OFFLINE: "1"}
+    volumes:
+      - ${MODEL_STORE_DIR:-./models}:/models:ro
+    networks: [model-zone]
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["${SHARED_GPU_DEVICE:-0}"]
+              capabilities: [gpu]
+
+  tei-rerank:
+    <<: *hardening
+    profiles: [gpu]
+    image: ${TEI_IMAGE:-ghcr.io/huggingface/text-embeddings-inference:1.5}
+    read_only: false
+    command: ["--model-id", "/models/${RERANK_MODEL_DIR:-rerank}"]
+    environment: {HF_HUB_OFFLINE: "1"}
+    volumes:
+      - ${MODEL_STORE_DIR:-./models}:/models:ro
+    networks: [model-zone]
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["${SHARED_GPU_DEVICE:-0}"]
+              capabilities: [gpu]
+
+  # ================================================================================ data zone
+  postgres:
+    <<: *hardening
+    image: ${POSTGRES_IMAGE:-pgvector/pgvector:pg16}
+    read_only: false
+    cap_drop: [ALL]
+    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER, SETGID, SETUID]
+    environment:
+      POSTGRES_DB: aiready
+      POSTGRES_USER: aiready
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./initdb:/docker-entrypoint-initdb.d:ro
+    networks: [data-zone]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U aiready -d aiready"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    <<: *hardening
+    image: ${REDIS_IMAGE:-redis:7.4-alpine}
+    command: ["redis-server", "--requirepass", "${REDIS_PASSWORD:?set REDIS_PASSWORD in .env}", "--appendonly", "yes", "--maxmemory-policy", "noeviction"]
+    volumes: [redis-data:/data]
+    networks: [data-zone]
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a \"$$REDIS_PASSWORD\" --no-auth-warning ping | grep -q PONG"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+    environment: {REDIS_PASSWORD: "${REDIS_PASSWORD}"}
+
+  qdrant:
+    <<: *hardening
+    image: ${QDRANT_IMAGE:-qdrant/qdrant:v1.12.4}
+    read_only: false
+    environment:
+      QDRANT__TELEMETRY_DISABLED: "true"
+      QDRANT__SERVICE__API_KEY: ${QDRANT_API_KEY:-}
+    volumes:
+      - qdrant-data:/qdrant/storage
+      - qdrant-snapshots:/qdrant/snapshots
+    networks: [data-zone]
+
+  # ================================================================================ observability
+  otel-collector:
+    <<: *hardening
+    image: ${OTEL_IMAGE:-otel/opentelemetry-collector-contrib:0.111.0}
+    command: ["--config=/etc/otelcol/config.yaml"]
+    environment: {AIREADY_ENV: "${AIREADY_ENV:-pilot}"}
+    volumes: [../observability/otel-collector.yaml:/etc/otelcol/config.yaml:ro]
+    networks: [platform-zone, model-zone]
+
+  prometheus:
+    <<: *hardening
+    image: ${PROMETHEUS_IMAGE:-prom/prometheus:v2.55.0}
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=15d
+      - --web.enable-remote-write-receiver
+    volumes:
+      - ../observability/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ../observability/prometheus/rules:/etc/prometheus/rules:ro
+      - prometheus-data:/prometheus
+    networks: [platform-zone, model-zone]
+
+  tempo:
+    <<: *hardening
+    image: ${TEMPO_IMAGE:-grafana/tempo:2.6.1}
+    command: ["-config.file=/etc/tempo.yaml"]
+    volumes:
+      - ../observability/tempo.yaml:/etc/tempo.yaml:ro
+      - tempo-data:/var/tempo
+    networks: [platform-zone]
+
+  loki:
+    <<: *hardening
+    image: ${LOKI_IMAGE:-grafana/loki:3.2.1}
+    command: ["-config.file=/etc/loki/config.yaml"]
+    volumes:
+      - ../observability/loki.yaml:/etc/loki/config.yaml:ro
+      - loki-data:/loki
+    networks: [platform-zone]
+
+  grafana:
+    <<: *hardening
+    image: ${GRAFANA_IMAGE:-grafana/grafana:11.3.0}
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD__FILE: /run/secrets/grafana_admin_password
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      GF_PLUGINS_PREINSTALL_DISABLED: "true"
+    secrets: [grafana_admin_password]
+    volumes:
+      - ../observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ../observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    networks: [app-zone, platform-zone]
+    ports: ["${AIREADY_BIND:-127.0.0.1}:3000:3000"]
+
+  # ================================================================================ egress
+  egress-proxy:
+    <<: *hardening
+    image: ${SQUID_IMAGE:-ubuntu/squid:6.6-24.04_edge}
+    read_only: false
+    cap_drop: [ALL]
+    cap_add: [SETUID, SETGID, CHOWN]
+    volumes:
+      - ../security/egress-proxy/squid.conf:/etc/squid/squid.conf:ro
+      - ../security/egress-proxy/allowlist.txt:/etc/squid/allowlist.txt:ro
+    networks: [platform-zone, egress-zone]
+
+  # ================================================================================ demo
+  legacy-app:
+    <<: *hardening
+    profiles: [demo]
+    image: ${AIREADY_IMAGE:-aiready/aiready}:${AIREADY_VERSION:-dev}
+    user: "10001:10001"
+    command: ["uvicorn", "app:app", "--app-dir", "/opt/examples/legacy_app", "--host", "0.0.0.0", "--port", "8000"]
+    environment: {PYTHONPATH: /opt/examples/legacy_app}
+    healthcheck: {disable: true}
+    volumes: [../../examples:/opt/examples:ro]
+    networks: [app-zone]
+    ports: ["${AIREADY_BIND:-127.0.0.1}:8000:8000"]
+
+networks:
+  app-zone:
+    name: aiready-app-zone
+  platform-zone:
+    name: aiready-platform-zone
+    internal: true
+  model-zone:
+    name: aiready-model-zone
+    internal: true
+  data-zone:
+    name: aiready-data-zone
+    internal: true
+  egress-zone:
+    name: aiready-egress-zone
+
+volumes:
+  aiready-data:
+  postgres-data:
+  redis-data:
+  qdrant-data:
+  qdrant-snapshots:
+  prometheus-data:
+  tempo-data:
+  loki-data:
+  grafana-data:
+
+secrets:
+  token_signing_key:
+    file: ./secrets/token_signing_key
+  audit_hmac_key:
+    file: ./secrets/audit_hmac_key
+  llm_api_key:
+    file: ./secrets/llm_api_key
+  service_token_key:
+    file: ./secrets/service_token_key
+  grafana_admin_password:
+    file: ./secrets/grafana_admin_password

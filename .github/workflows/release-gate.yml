@@ -1,0 +1,81 @@
+# Release gate: "Evaluation suite - score must not drop", "Safety tests - injection and data leaks",
+# "Cost and latency budget". Runs on every release tag (and can be called by deploy.yml). A failing gate
+# blocks the release: deploy.yml requires this workflow's success for the same commit.
+name: release-gate
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      release:
+        description: Release identifier recorded with the scorecards
+        required: true
+  workflow_call:
+    inputs:
+      release:
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+env:
+  PYTHON_VERSION: "3.12"
+  RELEASE: ${{ inputs.release || github.ref_name }}
+  # Evaluation runs in-process against the mock model backend and in-memory stores unless a staging
+  # endpoint is configured (EVAL_TARGET_OPTIONS), so the gate is deterministic in CI.
+  AIREADY_ENV: ci
+
+jobs:
+  evaluation:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+      - run: pip install -e ".[all,dev]"
+      - name: restore scorecard history (baseline = previous release)
+        uses: actions/cache/restore@v4
+        with:
+          path: data/evals
+          key: eval-history-${{ github.sha }}
+          restore-keys: eval-history-
+      - name: validate golden sets
+        run: aiready eval validate config/evals/golden/*.yaml
+      - name: run evaluation suites (golden + built-in safety suites)
+        run: aiready eval run claims --release "$RELEASE" --safety | tee scorecard.md
+      - name: release gate - score must not drop, safety must pass, cost/latency within budget
+        run: aiready eval gate claims --release "$RELEASE" --baseline latest
+      - name: save scorecard history
+        if: success()
+        uses: actions/cache/save@v4
+        with:
+          path: data/evals
+          key: eval-history-${{ github.sha }}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: scorecards-${{ env.RELEASE }}
+          path: |
+            scorecard.md
+            data/evals/scorecards/
+      - name: summary
+        if: always()
+        run: cat scorecard.md >> "$GITHUB_STEP_SUMMARY" || true
+
+  safety-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+      - run: pip install -e ".[all,dev]"
+      - name: guardrail and policy safety tests (injection, data leaks, PII echo)
+        run: pytest -q tests -k "injection or leak or pii or safety or jailbreak or egress or denied"
+      - name: policy-as-code tests
+        run: aiready policy test config/policies/tests

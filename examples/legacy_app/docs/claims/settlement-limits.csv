@@ -1,0 +1,4 @@
+role,max_settlement_eur,needs_second_approval
+adjuster,5000,no
+senior_adjuster,10000,no
+claims_committee,unlimited,yes

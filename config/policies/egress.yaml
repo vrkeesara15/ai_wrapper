@@ -1,0 +1,23 @@
+# Policy domain: egress - the outside model API is closed by default.
+# context.egress_allowed is computed by the governance service from security.egress (never by the caller).
+policies:
+  egress:
+    version: 1.0.0
+    description: Data leaving the client's boundary.
+    rules:
+      - id: egress.send.opened
+        description: An egress route is opened for this destination and data class.
+        action: egress.send
+        effect: allow
+        when:
+          principal.authenticated: true
+          context.egress_allowed: true
+        obligations:
+          mask_pii: true
+
+      - id: egress.send.closed
+        description: Egress is closed by default; no route opens this destination for this data class.
+        action: egress.send
+        effect: deny
+        when:
+          context.egress_allowed: {ne: true}

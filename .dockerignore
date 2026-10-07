@@ -1,0 +1,27 @@
+# Keep the build context small and free of secrets.
+.git
+.github
+.venv
+**/__pycache__
+**/*.pyc
+.pytest_cache
+.ruff_cache
+.mypy_cache
+dist
+build
+*.egg-info
+node_modules
+data
+tests
+docs
+web/node_modules
+AI-Ready.pdf
+# Deployment assets are not part of the image, except the backup scripts the CronJobs run.
+deploy
+!deploy/onprem/backup
+# Never ship local secrets or env files.
+.env
+.env.*
+**/*.pem
+**/*.key
+secrets

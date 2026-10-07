@@ -1,0 +1,56 @@
+# Policy domain: admin - administrative actions need named roles (and a person, never a service token).
+# The governance API also checks governance.api_roles; these rules let policy-as-code add conditions.
+policies:
+  admin:
+    version: 1.0.0
+    description: Control plane and governance administration.
+    rules:
+      - id: admin.no_service_principals
+        description: Administrative actions are performed by people, not service identities.
+        action: "admin.*"
+        effect: deny
+        when:
+          principal.is_service: true
+
+      - id: admin.registry
+        description: Registry changes by AI engineers, model approvers and admins.
+        action: "admin.registry.*"
+        effect: allow
+        when:
+          principal.roles: {any_in: [ai-engineer, model-approver, admin]}
+
+      - id: admin.registry.approval
+        description: Only model approvers approve or deprecate models and adapters.
+        action: [admin.registry.approve, admin.registry.deprecate]
+        effect: deny
+        when:
+          not:
+            principal.roles: {contains: model-approver}
+
+      - id: admin.policy
+        description: Policy administration.
+        action: "admin.policy.*"
+        effect: allow
+        when:
+          principal.roles: {any_in: [security-admin, policy-admin]}
+
+      - id: admin.security
+        description: Egress routes and incident actions by security admins.
+        action: ["admin.egress.*", "admin.incident.*"]
+        effect: allow
+        when:
+          principal.roles: {contains: security-admin}
+
+      - id: admin.access_review
+        description: Access reviews by security admins and access reviewers.
+        action: "admin.access_review.*"
+        effect: allow
+        when:
+          principal.roles: {any_in: [security-admin, access-reviewer]}
+
+      - id: admin.platform
+        description: Gateway control plane and other platform administration.
+        action: ["admin.config.*", "admin.gateway.*", "admin.platform.*"]
+        effect: allow
+        when:
+          principal.roles: {any_in: [admin, platform-admin]}

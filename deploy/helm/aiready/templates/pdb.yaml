@@ -1,0 +1,53 @@
+{{- /* PodDisruptionBudgets: node drains and upgrades never take a redundant component below quorum. */ -}}
+{{- range $name, $c0 := .Values.components }}
+{{- if $c0.enabled }}
+{{- $c := include "aiready.resolve" (dict "root" $ "c" $c0) | fromYaml }}
+{{- if and $c.pdb $c.pdb.enabled }}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "aiready.labels" (dict "root" $ "name" $name "zone" $c.zone) | nindent 4 }}
+spec:
+  {{- if hasKey $c.pdb "minAvailable" }}
+  minAvailable: {{ $c.pdb.minAvailable }}
+  {{- else }}
+  maxUnavailable: {{ $c.pdb.maxUnavailable | default 1 }}
+  {{- end }}
+  unhealthyPodEvictionPolicy: AlwaysAllow
+  selector:
+    matchLabels:
+      {{- include "aiready.selectorLabels" (dict "root" $ "name" $name) | nindent 6 }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- if .Values.qdrant.enabled }}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: qdrant
+  labels:
+    {{- include "aiready.labels" (dict "root" . "name" "qdrant" "zone" "data") | nindent 4 }}
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      {{- include "aiready.selectorLabels" (dict "root" . "name" "qdrant") | nindent 6 }}
+{{- end }}
+{{- if .Values.egressProxy.enabled }}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: egress-proxy
+  labels:
+    {{- include "aiready.labels" (dict "root" . "name" "egress-proxy" "zone" "egress") | nindent 4 }}
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      {{- include "aiready.selectorLabels" (dict "root" . "name" "egress-proxy") | nindent 6 }}
+{{- end }}

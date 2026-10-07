@@ -18,8 +18,10 @@ def _isolate(tmp_path, monkeypatch):
     audit.set_audit(audit.AuditLog([audit.MemorySink()]))
     stores.set_docstore(stores.DocStore("sqlite:///:memory:"))
     wiring.reset()
+    identity.set_revocation_checker(None)
     yield
     wiring.reset()
+    identity.set_revocation_checker(None)
 
 
 @pytest.fixture

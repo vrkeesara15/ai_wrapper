@@ -76,3 +76,13 @@ def test_span_records():
             pass
     spans = recorder.trace(tid)
     assert {s.name for s in spans} == {"outer", "inner"}
+
+
+def test_revoked_subject_rejected_at_authentication(token_service):
+    from aiready.core.identity import principal_from_headers, set_revocation_checker
+
+    tok = token_service.issue(sub="mallory")
+    set_revocation_checker(lambda p: "sub:mallory revoked" if p.sub == "mallory" else None)
+    with pytest.raises(AuthenticationError):
+        principal_from_headers({"Authorization": f"Bearer {tok}"})
+    assert principal_from_headers({"Authorization": f"Bearer {token_service.issue(sub='bob')}"}).jti

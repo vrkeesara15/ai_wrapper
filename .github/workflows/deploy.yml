@@ -1,0 +1,182 @@
+# Staged rollout: staging -> shadow -> canary -> production ("Release pipeline", step 4).
+# Each stage after staging is a GitHub environment with required reviewers (manual approval).
+# The release is ONE signed image digest + the chart + config from the same commit ("one version of all
+# three"). Rollback is one change: delete the next release (shadow/canary) or `helm rollback` production.
+name: deploy
+
+on:
+  workflow_dispatch:
+    inputs:
+      digest:
+        description: Signed image digest (sha256:...) produced by ci.yml
+        required: true
+      release:
+        description: Release tag (must have passed release-gate.yml)
+        required: true
+      canary_weight:
+        description: Share of requests sent to the canary (%)
+        default: "5"
+      rollback:
+        description: Roll production back to the previous Helm revision instead of deploying
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  id-token: write     # cloud OIDC login (no long-lived cluster credentials)
+  actions: read
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+env:
+  CHART: deploy/helm/aiready
+  IMAGE: ghcr.io/${{ github.repository_owner }}/aiready
+  NS: aiready
+  NEXT_NS: aiready-next
+
+jobs:
+  preflight:
+    if: ${{ !inputs.rollback }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.release }}
+      - uses: sigstore/cosign-installer@v3
+      - name: image signature must verify
+        env:
+          COSIGN_PUBLIC_KEY: ${{ vars.COSIGN_PUBLIC_KEY }}
+        run: |
+          REF="$IMAGE@${{ inputs.digest }}"
+          if [ -n "$COSIGN_PUBLIC_KEY" ]; then
+            printf '%s' "$COSIGN_PUBLIC_KEY" > cosign.pub
+            cosign verify --key cosign.pub "$REF" > /dev/null
+          else
+            cosign verify "$REF" \
+              --certificate-identity-regexp "^https://github.com/${{ github.repository }}/.github/workflows/ci.yml@" \
+              --certificate-oidc-issuer https://token.actions.githubusercontent.com > /dev/null
+          fi
+      - name: release gate must have passed for this tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          conclusion=$(gh run list --workflow release-gate.yml --branch "${{ inputs.release }}" --limit 1 \
+            --json conclusion --jq '.[0].conclusion' --repo "${{ github.repository }}")
+          [ "$conclusion" = "success" ] || { echo "release gate not passed for ${{ inputs.release }} ($conclusion)"; exit 1; }
+
+  staging:
+    needs: preflight
+    runs-on: ubuntu-latest
+    environment: staging          # full copy, test data
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.release }}
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.16.2
+      - uses: ./.github/actions/kubeconfig
+        with:
+          kubeconfig: ${{ secrets.KUBECONFIG }}
+      - name: helm upgrade staging
+        run: |
+          helm upgrade --install aiready "$CHART" -n "$NS" --create-namespace --atomic --timeout 20m \
+            -f "$CHART/values-production.yaml" \
+            --set global.environment=staging \
+            --set image.digest=${{ inputs.digest }}
+      - name: smoke test and evaluation against staging
+        run: |
+          kubectl -n "$NS" rollout status deploy/gateway --timeout=10m
+          # Runs inside a platform pod: it has the config, the k8s wiring overlay and a service identity,
+          # so the rag target exercises the deployed services end to end.
+          kubectl -n "$NS" exec deploy/observability -- \
+            aiready eval gate claims --release "${{ inputs.release }}-staging" --baseline latest --target rag
+
+  shadow:
+    needs: staging
+    runs-on: ubuntu-latest
+    environment: production-shadow   # approval: real requests, no replies
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.release }}
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.16.2
+      - uses: ./.github/actions/kubeconfig
+        with:
+          kubeconfig: ${{ secrets.KUBECONFIG }}
+      - name: install next release as shadow (no ingress, no route to the existing app)
+        run: |
+          helm upgrade --install aiready-next "$CHART" -n "$NEXT_NS" --create-namespace --atomic --timeout 30m \
+            -f "$CHART/values-production.yaml" \
+            --set rollout.role=shadow --set networkPolicy.appCidrs=null \
+            --set image.digest=${{ inputs.digest }}
+      - name: mirror production traffic to the shadow
+        run: |
+          helm upgrade aiready "$CHART" -n "$NS" --reuse-values \
+            --set "rollout.mirrorTarget=http://gateway.${NEXT_NS}.svc.cluster.local:8080"
+
+  canary:
+    needs: shadow
+    runs-on: ubuntu-latest
+    environment: production-canary   # approval after reviewing shadow scores/latency dashboards
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.release }}
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.16.2
+      - uses: ./.github/actions/kubeconfig
+        with:
+          kubeconfig: ${{ secrets.KUBECONFIG }}
+      - name: stop mirroring, promote next release to canary
+        run: |
+          helm upgrade aiready "$CHART" -n "$NS" --reuse-values --set rollout.mirrorTarget=""
+          helm upgrade aiready-next "$CHART" -n "$NEXT_NS" --reuse-values \
+            --set rollout.role=canary --set rollout.canaryWeight=${{ inputs.canary_weight }} \
+            --set-json 'networkPolicy.appCidrs=${{ vars.APP_CIDRS_JSON }}'
+
+  production:
+    needs: canary
+    runs-on: ubuntu-latest
+    environment: production          # approval after canary error rate / quality / spend hold
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.release }}
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.16.2
+      - uses: ./.github/actions/kubeconfig
+        with:
+          kubeconfig: ${{ secrets.KUBECONFIG }}
+      - name: promote - upgrade the stable release to the new digest
+        run: |
+          helm upgrade aiready "$CHART" -n "$NS" --atomic --timeout 30m \
+            -f "$CHART/values-production.yaml" \
+            --set image.digest=${{ inputs.digest }}
+      - name: retire the canary release
+        run: helm uninstall aiready-next -n "$NEXT_NS" --wait
+
+  rollback:
+    if: ${{ inputs.rollback }}
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.16.2
+      - uses: ./.github/actions/kubeconfig
+        with:
+          kubeconfig: ${{ secrets.KUBECONFIG }}
+      - name: one change - drop the next release and roll production back one revision
+        run: |
+          helm uninstall aiready-next -n "$NEXT_NS" --wait || true
+          helm upgrade aiready "$CHART" -n "$NS" --reuse-values --set rollout.mirrorTarget="" || true
+          helm rollback aiready 0 -n "$NS" --wait   # 0 = previous revision
+          helm history aiready -n "$NS" --max 5

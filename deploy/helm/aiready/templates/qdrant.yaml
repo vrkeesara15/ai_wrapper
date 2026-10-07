@@ -1,0 +1,124 @@
+{{- /* Vector database (data zone): Qdrant cluster with replicas; daily snapshots by the backup-qdrant CronJob. */ -}}
+{{- if .Values.qdrant.enabled }}
+{{- $q := .Values.qdrant }}
+{{- $sel := include "aiready.selectorLabels" (dict "root" . "name" "qdrant") | fromYaml }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: qdrant-headless
+  labels:
+    {{- include "aiready.labels" (dict "root" . "name" "qdrant" "zone" "data") | nindent 4 }}
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  selector:
+    {{- toYaml $sel | nindent 4 }}
+  ports:
+    - {name: http, port: 6333, targetPort: 6333}
+    - {name: grpc, port: 6334, targetPort: 6334}
+    - {name: p2p, port: 6335, targetPort: 6335}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: qdrant
+  labels:
+    {{- include "aiready.labels" (dict "root" . "name" "qdrant" "zone" "data") | nindent 4 }}
+spec:
+  selector:
+    {{- toYaml $sel | nindent 4 }}
+  ports:
+    - {name: http, port: 6333, targetPort: 6333}
+    - {name: grpc, port: 6334, targetPort: 6334}
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: qdrant
+  labels:
+    {{- include "aiready.labels" (dict "root" . "name" "qdrant" "zone" "data") | nindent 4 }}
+spec:
+  serviceName: qdrant-headless
+  replicas: {{ $q.replicas }}
+  podManagementPolicy: OrderedReady
+  selector:
+    matchLabels:
+      {{- toYaml $sel | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "aiready.labels" (dict "root" . "name" "qdrant" "zone" "data") | nindent 8 }}
+    spec:
+      serviceAccountName: qdrant
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      {{- include "aiready.imagePullSecrets" . | nindent 6 }}
+      securityContext:
+        {{- include "aiready.podSecurityContext" . | nindent 8 }}
+      {{- include "aiready.scheduling" (dict "root" . "pool" $q.nodePool "tolerations" (list) "selector" $sel "spread" true) | nindent 6 }}
+      containers:
+        - name: qdrant
+          image: {{ include "aiready.image" (dict "root" . "image" $q.image) }}
+          command: [/bin/sh, -c]
+          args:
+            - |
+              # The first peer bootstraps the cluster; the others join it.
+              ordinal="${POD_NAME##*-}"
+              self="http://${POD_NAME}.qdrant-headless:6335"
+              if [ "$ordinal" = "0" ]; then exec ./entrypoint.sh --uri "$self"; fi
+              exec ./entrypoint.sh --bootstrap "http://qdrant-0.qdrant-headless:6335" --uri "$self"
+          env:
+            - name: POD_NAME
+              valueFrom: {fieldRef: {fieldPath: metadata.name}}
+            - {name: QDRANT__CLUSTER__ENABLED, value: {{ gt (int $q.replicas) 1 | quote }}}
+            - {name: QDRANT__TELEMETRY_DISABLED, value: "true"}
+            - {name: QDRANT__STORAGE__SNAPSHOTS_PATH, value: /qdrant/snapshots}
+            - {name: QDRANT_INIT_FILE_PATH, value: /qdrant/storage/.qdrant-initialized}
+            {{- if ne .Values.secrets.mode "vault" }}
+            - name: QDRANT__SERVICE__API_KEY
+              valueFrom:
+                secretKeyRef: {name: {{ .Values.secrets.existingSecret }}, key: qdrant_api_key}
+            {{- end }}
+          ports:
+            - {name: http, containerPort: 6333}
+            - {name: grpc, containerPort: 6334}
+            - {name: p2p, containerPort: 6335}
+          readinessProbe:
+            httpGet: {path: /readyz, port: http}
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: {path: /livez, port: http}
+            periodSeconds: 20
+          resources:
+            {{- toYaml $q.resources | nindent 12 }}
+          securityContext:
+            {{- include "aiready.containerSecurityContext" . | nindent 12 }}
+          volumeMounts:
+            - {name: storage, mountPath: /qdrant/storage}
+            - {name: snapshots, mountPath: /qdrant/snapshots}
+            - {name: tmp, mountPath: /tmp}
+      volumes:
+        - name: tmp
+          emptyDir: {}
+  volumeClaimTemplates:
+    - metadata:
+        name: storage
+      spec:
+        accessModes: [ReadWriteOnce]
+        {{- with $q.storage.storageClassName }}
+        storageClassName: {{ . }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ $q.storage.size }}
+    - metadata:
+        name: snapshots
+      spec:
+        accessModes: [ReadWriteOnce]
+        {{- with $q.snapshotStorage.storageClassName }}
+        storageClassName: {{ . }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ $q.snapshotStorage.size }}
+{{- end }}

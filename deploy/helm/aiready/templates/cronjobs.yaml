@@ -1,0 +1,83 @@
+{{- /*
+Batch CronJobs on the batch pool (spare / spot capacity): scheduled ingestion, nightly evaluation, audit
+chain verification, memory purge and backups (state DB, vector index snapshots, config).
+*/ -}}
+{{- $b := .Values.batch }}
+{{- range $name, $j := $b.cronJobs }}
+{{- if $j.enabled }}
+{{- $secrets := $j.secrets | default list }}
+{{- $sa := ternary "backup" "batch" (eq ($j.backup | toString) "true") }}
+{{- $sel := include "aiready.selectorLabels" (dict "root" $ "name" $name) | fromYaml }}
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "aiready.labels" (dict "root" $ "name" $name "zone" "platform") | nindent 4 }}
+    aiready.io/batch: "true"
+spec:
+  schedule: {{ $j.schedule | quote }}
+  timeZone: {{ $j.timeZone | default "Etc/UTC" | quote }}
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 600
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 5
+  jobTemplate:
+    spec:
+      backoffLimit: {{ $j.backoffLimit | default 2 }}
+      activeDeadlineSeconds: {{ $j.activeDeadlineSeconds | default 3600 }}
+      ttlSecondsAfterFinished: 86400
+      template:
+        metadata:
+          labels:
+            {{- include "aiready.labels" (dict "root" $ "name" $name "zone" "platform") | nindent 12 }}
+            aiready.io/batch: "true"
+            {{- if $j.reachesApp }}
+            aiready.io/reaches-app: "true"
+            {{- end }}
+          annotations:
+            {{- include "aiready.vaultAnnotations" (dict "root" $ "secrets" $secrets) | nindent 12 }}
+            {{- if eq ($.Values.secrets.mode) "vault" }}
+            vault.hashicorp.com/agent-pre-populate-only: "true"
+            {{- end }}
+        spec:
+          restartPolicy: Never
+          serviceAccountName: {{ $sa }}
+          automountServiceAccountToken: false
+          enableServiceLinks: false
+          {{- include "aiready.imagePullSecrets" $ | nindent 10 }}
+          securityContext:
+            {{- include "aiready.podSecurityContext" $ | nindent 12 }}
+          {{- include "aiready.scheduling" (dict "root" $ "pool" $b.nodePool "tolerations" $b.tolerations "selector" $sel "spread" false) | nindent 10 }}
+          containers:
+            - name: {{ $name }}
+              image: {{ include "aiready.image" (dict "root" $ "image" $.Values.image) }}
+              imagePullPolicy: {{ $.Values.image.pullPolicy }}
+              command:
+                {{- toYaml $j.command | nindent 16 }}
+              {{- with $j.args }}
+              args:
+                {{- toYaml . | nindent 16 }}
+              {{- end }}
+              env:
+                {{- include "aiready.env" (dict "root" $ "name" $name "c" $j) | nindent 16 }}
+              resources:
+                {{- toYaml ($j.resources | default (dict "requests" (dict "cpu" "250m" "memory" "512Mi") "limits" (dict "memory" "2Gi"))) | nindent 16 }}
+              securityContext:
+                {{- include "aiready.containerSecurityContext" $ | nindent 16 }}
+              volumeMounts:
+                {{- include "aiready.platformVolumeMounts" (dict "root" $ "secrets" $secrets) | nindent 16 }}
+                {{- if $j.backup }}
+                - name: backups
+                  mountPath: /backups
+                {{- end }}
+          volumes:
+            {{- include "aiready.platformVolumes" (dict "root" $ "secrets" $secrets) | nindent 12 }}
+            {{- if $j.backup }}
+            - name: backups
+              persistentVolumeClaim:
+                claimName: {{ $b.backupTarget.existingClaim }}
+            {{- end }}
+{{- end }}
+{{- end }}

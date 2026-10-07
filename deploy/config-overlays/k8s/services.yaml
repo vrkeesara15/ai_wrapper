@@ -1,0 +1,50 @@
+# Overlay: service wiring for Kubernetes (stages 2/3). Hostnames are the Service names the Helm chart creates in the release namespace.
+#
+# Mounted as AIREADY_CONFIG_OVERLAY and deep-merged over the base config. A wiring name with a `url`
+# is reached over HTTP; without one it runs in-process (see aiready.core.wiring). Each service only
+# connects to what it uses, so listing every name here is harmless.
+services:
+  gateway:
+    url: "http://gateway:8080"
+  guardrails:
+    url: "http://guardrails:8090"
+  policy:
+    url: "http://governance:8091"
+  registry:
+    url: "http://governance:8091"
+  search:
+    url: "http://search:8102"
+  embedding:
+    url: "http://embedding:8100"
+  rerank:
+    url: "http://rerank:8101"
+  rag:
+    url: "http://rag:8110"
+  memory:
+    url: "http://memory:8111"
+  query:
+    url: "http://query:8112"
+  tools:
+    url: "http://mcp:8140"
+  agents:
+    url: "http://agents:8120"
+  observability:
+    url: "http://observability:8170"
+
+# Model-serving endpoints (OpenAI-compatible) for the gateway's upstream configuration to reference
+# (e.g. `base_url: ${AIREADY_MODEL_CHAT_URL}`). The deployment sets the environment, so the same overlay
+# serves the mock server, vLLM/TEI pools or a private endpoint without editing config.
+model_servers:
+  chat: "${AIREADY_MODEL_CHAT_URL:-http://model-chat:8000/v1}"
+  small: "${AIREADY_MODEL_SMALL_URL:-http://model-small:8000/v1}"
+  embed: "${AIREADY_MODEL_EMBED_URL:-http://model-embed:8000}"
+  rerank: "${AIREADY_MODEL_RERANK_URL:-http://model-rerank:8000}"
+  guard: "${AIREADY_MODEL_GUARD_URL:-http://model-guard:8000/v1}"
+
+# Pods are disposable, so the local audit file (emptyDir) is not the system of record in Kubernetes:
+# also emit every audit record to stdout, where the node log shipper forwards it to the log store and the
+# client's SIEM. Lists concatenate when overlays merge, so this adds a sink rather than replacing one.
+# Point the first sink at durable storage (or an http sink) before production; see docs/deployment.md.
+audit:
+  sinks:
+    - type: stdout

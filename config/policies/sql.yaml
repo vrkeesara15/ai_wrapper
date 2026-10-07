@@ -1,0 +1,47 @@
+# Policy domain: sql - structured data (text-to-SQL against the read replica).
+policies:
+  sql:
+    version: 1.0.0
+    description: SQL execution and approved metrics.
+    rules:
+      - id: sql.analyst.read_only
+        description: Analysts may run read-only SQL.
+        action: sql.execute
+        effect: allow
+        when:
+          principal.roles: {contains: analyst}
+          any:
+            - resource.read_only: true
+            - context.statement_type: [select]
+            - context.target: replica          # the query service only reaches the read replica, SELECT-only
+        obligations:
+          max_rows: 1000
+
+      - id: sql.write.deny
+        description: Generated SQL never writes.
+        action: sql.execute
+        effect: deny
+        when:
+          any:
+            - resource.read_only: false
+            - context.statement_type: {exists: true, not_in: [select]}
+
+      - id: sql.approved_metric
+        description: An approved metric is a reviewed, parameterised query; every signed-in user may run it.
+        action: sql.execute
+        effect: allow
+        when:
+          principal.authenticated: true
+          resource.source: metric
+          resource.metric: {exists: true}
+        obligations:
+          max_rows: 1000
+
+      - id: sql.metric.allow
+        description: Approved metrics are safe parameterised queries; every signed-in user may run them.
+        action: [sql.metric, query.metric]
+        effect: allow
+        when:
+          principal.authenticated: true
+        obligations:
+          max_rows: 1000

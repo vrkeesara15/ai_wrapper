@@ -1,0 +1,126 @@
+# Kubernetes pilot: the stage 1 footprint on a small cluster (one CPU node pool + ONE GPU node), for clients
+# who want Kubernetes from day one. (The default stage 1 is docker compose: deploy/compose.)
+#   helm upgrade --install aiready deploy/helm/aiready -n aiready -f deploy/helm/aiready/values-pilot.yaml
+global:
+  environment: pilot
+  stage: pilot
+  topologySpread: false
+
+defaults:
+  replicas: 1
+  hpa: {enabled: false}
+  pdb: {enabled: false}
+  resources:
+    requests: {cpu: 100m, memory: 256Mi}
+    limits: {memory: 1Gi}
+
+state:
+  # In-cluster redis below; the state DB stays sqlite per pod unless stateUrl points at a Postgres.
+  redisUrl: redis://redis:6379/0
+  kvType: redis
+  queueType: redis
+
+components:
+  gateway:
+    replicas: 1
+    hpa: {enabled: false}
+    pdb: {enabled: false}
+    resources:
+      requests: {cpu: 250m, memory: 512Mi}
+      limits: {memory: 1Gi}
+  embedding:
+    keda: {enabled: false}
+  agents:
+    keda: {enabled: false}
+  ingestion-worker:
+    nodePool: ""                      # no batch pool in the pilot
+    command: [python, -m, aiready.ingestion.worker]   # single worker keeps the built-in scheduler
+    keda: {enabled: false}
+    resources:
+      requests: {cpu: 250m, memory: 512Mi}
+      limits: {memory: 2Gi}
+
+keda:
+  enabled: false
+
+modelServing:
+  modelStore:
+    localCache: {enabled: false}      # one node: verify in place, no copy
+  pools:
+    # One GPU node: chat model only; router/guard/embedding/rerank share it via GPU time-slicing
+    # or run on the mock / CPU backends until a second GPU arrives.
+    chat:
+      nodePool: gpu-a
+      models:
+        - name: chat
+          engine: vllm
+          path: chat/v1
+          replicas: 1
+          gpus: 1
+          resources:
+            requests: {cpu: "4", memory: 24Gi}
+            limits: {memory: 48Gi}
+          args: [--enable-prefix-caching, --max-model-len=8192, --gpu-memory-utilization=0.60]
+          keda: {enabled: false}
+          canary: {enabled: false}
+    small:
+      nodePool: gpu-a
+      models: []
+    embed:
+      nodePool: gpu-a
+      models:
+        - name: embed
+          engine: tei
+          path: embed/v1
+          replicas: 1
+          gpus: 1
+          resources:
+            requests: {cpu: "1", memory: 4Gi}
+            limits: {memory: 8Gi}
+          args: [--max-batch-tokens=8192]
+          keda: {enabled: false}
+          canary: {enabled: false}
+        - name: rerank
+          engine: tei
+          path: rerank/v1
+          replicas: 1
+          gpus: 1
+          resources:
+            requests: {cpu: "1", memory: 4Gi}
+            limits: {memory: 8Gi}
+          args: []
+          keda: {enabled: false}
+          canary: {enabled: false}
+
+# Router and guard fall back to the chat model until the small pool exists.
+modelEndpoints:
+  small: http://model-chat:8000/v1
+  guard: http://model-chat:8000/v1
+
+egressProxy:
+  replicas: 1
+
+qdrant:
+  replicas: 1
+  storage: {size: 20Gi}
+  snapshotStorage: {size: 20Gi}
+  resources:
+    requests: {cpu: 250m, memory: 1Gi}
+    limits: {memory: 2Gi}
+
+redis:
+  enabled: true
+
+otelCollector:
+  replicas: 1
+
+monitoring:
+  serviceMonitor: {enabled: false}
+  prometheusRule: {enabled: false}
+
+batch:
+  nodePool: ""
+  tolerations: []
+  cronJobs:
+    ingestion-sync: {enabled: false}  # the single worker schedules ingestion itself
+    backup-postgres: {enabled: false} # no Postgres in the pilot

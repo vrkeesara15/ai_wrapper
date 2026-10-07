@@ -1,0 +1,27 @@
+# Third-party images shipped in every on-prem release bundle (one reference per line, '#' comments).
+# The platform image (${REGISTRY:-ghcr.io/aiready}/aiready:${VERSION}, one image for every aiready service)
+# is added automatically by build-bundle.sh - do not list it here.
+# Pin by digest (name:tag@sha256:...) once the versions are agreed with the client's security team.
+
+# state, cache, vector index
+redis:7.4-alpine
+pgvector/pgvector:pg16
+qdrant/qdrant:v1.12.4
+
+# model serving (GPU workers A: chat pool; GPU workers B: small/embedding/rerank pools)
+vllm/vllm-openai:v0.6.4
+ghcr.io/huggingface/text-embeddings-inference:1.5
+ghcr.io/huggingface/text-embeddings-inference:cpu-1.5
+
+# observability
+otel/opentelemetry-collector-contrib:0.111.0
+prom/prometheus:v2.55.0
+grafana/grafana:11.3.0
+grafana/tempo:2.6.1
+grafana/loki:3.2.1
+
+# security: egress proxy (the only route out, closed by default)
+ubuntu/squid:6.6-24.04_edge
+
+# init containers / utilities (weight checksum verification)
+busybox:1.36

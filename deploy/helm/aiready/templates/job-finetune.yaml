@@ -1,0 +1,86 @@
+{{- /*
+Fine-tuning Job ("Fine-tuning pipeline", step 2): adapter training on the off-peak GPU pool. The base model
+is pinned and mounted read-only (base weights stay frozen); the adapter is written to the adapter registry
+volume. It never serves traffic: the release gate (aiready eval gate) and human approval come next, then the
+adapter is added to modelServing.pools.*.models[].adapters. One Job per run id.
+*/ -}}
+{{- if .Values.fineTuning.enabled }}
+{{- $ft := .Values.fineTuning }}
+{{- if not $ft.runId }}{{ fail "fineTuning.runId is required when fineTuning.enabled" }}{{ end }}
+{{- $name := printf "finetune-%s" $ft.runId | trunc 63 | trimSuffix "-" }}
+{{- $sel := include "aiready.selectorLabels" (dict "root" . "name" $name) | fromYaml }}
+{{- $tol := concat .Values.modelServing.gpuTolerations .Values.batch.tolerations }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "aiready.labels" (dict "root" . "name" $name "zone" "model") | nindent 4 }}
+    aiready.io/finetune-run: {{ $ft.runId | quote }}
+spec:
+  backoffLimit: 1
+  activeDeadlineSeconds: {{ $ft.activeDeadlineSeconds }}
+  ttlSecondsAfterFinished: 604800
+  template:
+    metadata:
+      labels:
+        {{- include "aiready.labels" (dict "root" . "name" $name "zone" "model") | nindent 8 }}
+    spec:
+      restartPolicy: Never
+      serviceAccountName: finetune
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      {{- with .Values.modelServing.runtimeClassName }}
+      runtimeClassName: {{ . }}
+      {{- end }}
+      # Off-peak only: low priority so live serving pre-empts it.
+      priorityClassName: {{ $ft.priorityClassName | default "" | quote }}
+      {{- include "aiready.imagePullSecrets" . | nindent 6 }}
+      securityContext:
+        {{- include "aiready.podSecurityContext" . | nindent 8 }}
+      {{- include "aiready.scheduling" (dict "root" . "pool" $ft.nodePool "tolerations" $tol "selector" $sel "spread" false) | nindent 6 }}
+      containers:
+        - name: train
+          image: {{ include "aiready.image" (dict "root" . "image" $ft.image) }}
+          command:
+            {{- toYaml $ft.command | nindent 12 }}
+          args:
+            - {{ printf "--base-model=/model-store/%s" $ft.baseModelPath }}
+            - {{ printf "--dataset=/model-store/%s" $ft.datasetPath }}
+            - {{ printf "--output=/adapters/%s" $ft.runId }}
+            {{- range $ft.args }}
+            - {{ . | quote }}
+            {{- end }}
+          env:
+            - {name: HOME, value: /tmp}
+            - {name: HF_HOME, value: /tmp/hf}
+            - {name: HF_HUB_OFFLINE, value: "1"}
+            - {name: AIREADY_FINETUNE_RUN_ID, value: {{ $ft.runId | quote }}}
+            - {name: OTEL_EXPORTER_OTLP_ENDPOINT, value: {{ .Values.global.otlpEndpoint | quote }}}
+          resources:
+            requests:
+              {{- toYaml $ft.resources.requests | nindent 14 }}
+              nvidia.com/gpu: {{ $ft.gpus }}
+            limits:
+              {{- toYaml $ft.resources.limits | nindent 14 }}
+              nvidia.com/gpu: {{ $ft.gpus }}
+          securityContext:
+            {{- include "aiready.containerSecurityContext" . | nindent 12 }}
+          volumeMounts:
+            - {name: model-store, mountPath: /model-store, readOnly: true}
+            - {name: adapters, mountPath: /adapters}
+            - {name: tmp, mountPath: /tmp}
+            - {name: dshm, mountPath: /dev/shm}
+      volumes:
+        - name: model-store
+          persistentVolumeClaim:
+            claimName: {{ .Values.modelServing.modelStore.existingClaim }}
+            readOnly: true
+        - name: adapters
+          persistentVolumeClaim:
+            claimName: {{ $ft.outputClaim }}
+        - name: tmp
+          emptyDir: {sizeLimit: 100Gi}
+        - name: dshm
+          emptyDir: {medium: Memory, sizeLimit: 16Gi}
+{{- end }}

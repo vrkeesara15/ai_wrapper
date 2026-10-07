@@ -1,0 +1,19 @@
+# Prompt templates for the memory service (aiready.memory). See rag.yaml for the file layout.
+prompts:
+
+  # Session summarisation (route `small`). Placeholders: max_words, previous_summary, transcript.
+  memory.summarize:
+    active: v1
+    versions:
+      v1:
+        system: |
+          Summarise the earlier part of a conversation between a user and an assistant in at most
+          {max_words} words. Keep facts, decisions, document names, numbers and open questions.
+          Do not add anything that was not said. Write plain sentences, no headings.
+        user: |
+          Summary so far:
+          {previous_summary}
+
+          New turns:
+          {transcript}
+        params: {temperature: 0.0}

@@ -1,0 +1,129 @@
+# Knowledge services: embedding (8100), reranking (8101), vector + keyword search (8102).
+#
+# Defaults run with no infrastructure: hash embeddings, lexical reranker, in-memory vectors + BM25.
+# Every swappable component is a plugin spec: `type: <registered name>` or `class: your_pkg.module:Class`.
+# Values may use ${ENV_VAR:-default} and ${secret:name}.
+
+# --------------------------------------------------------------------------- embedding service
+embedding:
+  # Logical model name -> encoder (plugin kind `embedder`). The gateway's embedding route points here.
+  # One model version per index: changing model, version or dim means a full re-embed.
+  models:
+    embedding:
+      type: hash            # offline feature hashing (not semantic) - tests, demos, air-gapped smoke tests
+      dim: 384
+    # --- production examples -------------------------------------------------------------------
+    # embedding:            # Hugging Face TEI / vLLM / Ollama serving an open model (OpenAI-compatible API)
+    #   type: openai
+    #   url: ${EMBEDDING_URL:-http://tei-embed:80}
+    #   model: BAAI/bge-m3
+    #   version: "5617a9f"   # HF revision: bump on every weight change
+    #   dim: 1024
+    #   max_batch_size: 64
+    #   api_key: ${secret:embedding_api_key}
+    # embedding:            # local GPU / CPU (pip install sentence-transformers)
+    #   type: sentence_transformers
+    #   model: intfloat/multilingual-e5-large
+    #   revision: main
+    #   device: cuda
+    #   prefix: "passage: "  # e5 convention - same setting for documents and questions
+  default_model: embedding
+
+  cache:                    # text hash + model id + version -> vector; repeated text skips the GPU
+    enabled: true
+    kv: {type: memory}      # {type: redis, url: "${REDIS_URL}"} when running more than one replica
+    ttl_seconds: 604800
+
+  batcher:                  # dynamic batching; `live` (queries) always served before `bulk` (ingestion)
+    max_batch_size: 64
+    max_wait_ms: 5          # how long bulk text waits for company
+    live_max_wait_ms: 2     # shorter wait once a user question is pending
+    max_concurrent_batches: 1   # raise for remote servers with several replicas
+    max_queue: 100000       # bulk back-pressure (HTTP 429 beyond); autoscale replicas on aiready_queue_depth
+
+  max_texts_per_request: 4096
+  max_chars_per_text: 32000
+  policy_check: true        # model.invoke policy decision when a user principal is known
+
+# --------------------------------------------------------------------------- reranking service
+rerank:
+  models:
+    reranker:
+      type: lexical         # word overlap, offline
+    # --- production examples -------------------------------------------------------------------
+    # reranker:             # Hugging Face TEI serving a cross-encoder
+    #   type: remote
+    #   style: tei           # or `cohere` for Cohere / Jina / vLLM /v1/rerank
+    #   url: ${RERANK_URL:-http://tei-rerank:80}
+    #   model: BAAI/bge-reranker-v2-m3
+    #   max_length: 512
+    #   batch_size: 32
+    # reranker:             # local cross-encoder (pip install sentence-transformers); can share the embedding GPU
+    #   type: cross_encoder
+    #   model: BAAI/bge-reranker-v2-m3
+    #   device: cuda
+    #   max_length: 512
+  default_model: reranker
+  defaults:                 # 50 in / 5 out are starting defaults; tune per client on the evaluation set
+    max_candidates: 50
+    top_n: 5
+    threshold: null         # e.g. 0.2 for bge-reranker sigmoid scores; null keeps the top_n whatever the score
+  apps: {}                  # per-application overrides, e.g.
+  #   claims: {max_candidates: 40, top_n: 6, threshold: 0.15}
+  timeout_seconds: 2.0      # slower than this -> search order is used, event logged + aiready_fallbacks_total
+  fallback_on_error: true
+  policy_check: true
+
+# --------------------------------------------------------------------------- search service
+search:
+  base_collection: knowledge   # collections: <base>__<app>__<tenant> (one per application and tenant)
+  vector_store:
+    type: memory
+    # persist_dir: data/vectors      # survive restarts on a single-node pilot
+    # --- production examples -------------------------------------------------------------------
+    # type: qdrant                     # pip install aiready[qdrant]
+    # url: ${QDRANT_URL:-http://qdrant:6333}
+    # api_key: ${secret:qdrant_api_key}
+    # shard_number: 3
+    # replication_factor: 2            # replicas for read load
+    # write_consistency_factor: 1
+    # hnsw_m: 16
+    # hnsw_ef_construct: 128
+    # search_ef: 128
+    # on_disk: false
+    #
+    # type: pgvector                   # pip install aiready[postgres]
+    # url: ${PGVECTOR_URL:-postgresql+psycopg://aiready@postgres/aiready}
+    # hnsw_m: 16
+    # hnsw_ef_construction: 64
+    # ef_search: 100
+  keyword_index:
+    type: bm25              # exact terms, codes and names
+    k1: 1.2
+    b: 0.75
+    # persist_dir: data/bm25
+    # --- production example --------------------------------------------------------------------
+    # type: opensearch
+    # url: ${OPENSEARCH_URL:-https://opensearch:9200}
+    # username: aiready
+    # password: ${secret:opensearch_password}
+    # shards: 3
+    # replicas: 1
+    # snapshot_repository: aiready
+  dense_enabled: true
+  keyword_enabled: true
+  top_k: 50                 # candidates sent to the reranker
+  max_top_k: 200
+  candidates_per_index: 100 # pulled from each index before fusion
+  min_dense_score: null
+  fusion:
+    method: rrf             # rrf (rank-based, no score calibration) | weighted (min-max normalised scores)
+    k: 60
+    weights: [1.0, 1.0]     # [dense, keyword]
+  embedding_model: embedding    # logical model the gateway uses for query vectors (same model as ingestion)
+  embed_missing_vectors: true   # chunks upserted without a vector are embedded via the gateway (bulk queue)
+  enforce_tenant_collections: true
+  policy_check: true        # data.read on the collection before every search
+  snapshot_dir: data/snapshots/search
+  return_vectors: false
+  max_query_chars: 4000

@@ -1,0 +1,57 @@
+# Copy to terraform.tfvars and adjust. Values below are a stage 2 (production) baseline.
+# Node counts are placeholders: size each pool with `aiready sizing` from a load test on the client's
+# hardware before ordering capacity (see the capacity and sizing method).
+
+name   = "aiready-prod"
+region = "eu-west-1"
+stage  = "production" # pilot | production | platform
+
+tags = {
+  owner       = "platform-team"
+  cost-centre = "ai-foundation"
+}
+
+vpc_cidr           = "10.40.0.0/16"
+availability_zones = [] # empty = first three AZs in the region
+
+# Existing application network (peered / transit gateway) that calls the internal ingress.
+app_network_cidrs = ["10.10.0.0/16"]
+
+# Closed by default. true creates the single controlled route out for the egress proxy only.
+enable_egress_nat = false
+
+# Optional vendor model inside this account (Bedrock VPC endpoint), opened per data class by policy.
+enable_private_model_endpoint = false
+
+kubernetes_version   = "1.31"
+admin_principal_arns = ["arn:aws:iam::111122223333:role/platform-engineers", "arn:aws:iam::111122223333:role/ci-deploy"]
+
+node_groups = {
+  cpu   = { instance_types = ["m6i.2xlarge"], min_size = 3, desired_size = 3, max_size = 9 }
+  gpu_a = { instance_types = ["g5.12xlarge"], min_size = 1, desired_size = 1, max_size = 4, disk_size_gb = 500 }
+  gpu_b = { instance_types = ["g5.2xlarge"], min_size = 1, desired_size = 1, max_size = 2, disk_size_gb = 200 }
+  batch = { instance_types = ["m6i.2xlarge", "m6a.2xlarge", "m5.2xlarge"], min_size = 0, desired_size = 0, max_size = 10 }
+}
+
+db_instance_class        = "db.r6g.large"
+db_multi_az              = true
+db_backup_retention_days = 14
+redis_node_type          = "cache.r7g.large"
+redis_num_nodes          = 2
+backup_retention_days    = 90
+deletion_protection      = true
+
+log_retention_days       = 30
+audit_log_retention_days = 400
+
+# ---------------------------------------------------------------------------------------------------
+# Stage 1 (pilot on a private endpoint, no GPUs in the cluster):
+#   stage = "pilot"; enable_private_model_endpoint = true; db_multi_az = false; redis_num_nodes = 1
+#   node_groups = { cpu = { instance_types = ["m6i.xlarge"], min_size = 2, desired_size = 2, max_size = 3 } }
+#   (A single-host pilot with one GPU node uses deploy/compose instead of this module.)
+#
+# Stage 3 (platform: GPU pool shared across teams, idle capacity scales to zero):
+#   stage = "platform"
+#   gpu_a = { instance_types = ["p4d.24xlarge"], min_size = 0, desired_size = 0, max_size = 8, disk_size_gb = 1000 }
+#   gpu_b = { instance_types = ["g5.4xlarge"],   min_size = 1, desired_size = 1, max_size = 4, disk_size_gb = 200 }
+#   batch = { ..., max_size = 20 }  # off-peak adapter training runs here or on idle gpu_a capacity

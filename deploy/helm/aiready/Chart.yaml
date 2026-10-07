@@ -1,0 +1,18 @@
+apiVersion: v2
+name: aiready
+description: >-
+  AI-Ready platform (stages 2 and 3): gateway, guardrails, governance, retrieval, agents, MCP, integration
+  layer, ingestion and observability, plus vLLM/TEI model-serving pools, deployed beside an existing
+  application with zone network policies, restricted pod security and signed-image admission.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+kubeVersion: ">=1.27.0-0"
+keywords: [ai, llm, rag, gateway, vllm, governance]
+home: https://example.invalid/aiready
+annotations:
+  # Optional CRDs this chart can use (each behind a values toggle):
+  #   monitoring.coreos.com/v1  ServiceMonitor, PrometheusRule   (monitoring.serviceMonitor / prometheusRule)
+  #   keda.sh/v1alpha1          ScaledObject, TriggerAuthentication (keda.enabled)
+  #   external-secrets.io/v1beta1 ExternalSecret                   (secrets.mode=externalSecrets)
+  aiready.io/optional-crds: "monitoring.coreos.com/v1,keda.sh/v1alpha1,external-secrets.io/v1beta1"

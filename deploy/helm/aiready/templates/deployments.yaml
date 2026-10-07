@@ -1,0 +1,119 @@
+{{- /*
+Platform components: one Deployment per enabled component, all from the same image.
+API components run `uvicorn <module>:<factory> --factory`; workers run their own command.
+*/ -}}
+{{- range $name, $c0 := .Values.components }}
+{{- if $c0.enabled }}
+{{- $c := include "aiready.resolve" (dict "root" $ "c" $c0) | fromYaml }}
+{{- $sel := include "aiready.selectorLabels" (dict "root" $ "name" $name) | fromYaml }}
+{{- $pool := $c.nodePool | default "" }}
+{{- $tol := include "aiready.poolTolerations" (dict "root" $ "pool" $pool) | fromYamlArray }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "aiready.labels" (dict "root" $ "name" $name "zone" $c.zone) | nindent 4 }}
+spec:
+  {{- if not (include "aiready.autoscaled" (dict "root" $ "c" $c)) }}
+  replicas: {{ $c.replicas }}
+  {{- end }}
+  revisionHistoryLimit: 5
+  selector:
+    matchLabels:
+      {{- toYaml $sel | nindent 6 }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 25%
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        {{- include "aiready.labels" (dict "root" $ "name" $name "zone" $c.zone) | nindent 8 }}
+        {{- if $c.egress }}
+        aiready.io/egress: "true"
+        {{- end }}
+        {{- if $c.reachesApp }}
+        aiready.io/reaches-app: "true"
+        {{- end }}
+        {{- with $.Values.global.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      annotations:
+        {{- if $.Values.config.rollOnChange }}
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") $ | sha256sum }}
+        {{- end }}
+        {{- with $.Values.global.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+        {{- include "aiready.vaultAnnotations" (dict "root" $ "secrets" $c.secrets) | nindent 8 }}
+    spec:
+      serviceAccountName: {{ $name }}
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      terminationGracePeriodSeconds: {{ $c.terminationGracePeriodSeconds }}
+      {{- include "aiready.imagePullSecrets" $ | nindent 6 }}
+      securityContext:
+        {{- include "aiready.podSecurityContext" $ | nindent 8 }}
+      {{- include "aiready.scheduling" (dict "root" $ "pool" $pool "tolerations" $tol "selector" $sel "spread" true) | nindent 6 }}
+      containers:
+        - name: {{ $name }}
+          image: {{ include "aiready.image" (dict "root" $ "image" $.Values.image) }}
+          imagePullPolicy: {{ $.Values.image.pullPolicy }}
+          {{- if $c.command }}
+          command:
+            {{- toYaml $c.command | nindent 12 }}
+          {{- else }}
+          command:
+            - uvicorn
+            - {{ printf "%s:%s" $c.module ($c.factory | default "create_app") }}
+            - --factory
+            - --host=0.0.0.0
+            - {{ printf "--port=%v" $c.port }}
+            - --proxy-headers
+            - --forwarded-allow-ips=*
+            - --timeout-graceful-shutdown=20
+          {{- end }}
+          {{- with $c.args }}
+          args:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          env:
+            {{- include "aiready.env" (dict "root" $ "name" $name "c" $c) | nindent 12 }}
+          {{- if $c.port }}
+          ports:
+            - name: http
+              containerPort: {{ $c.port }}
+              protocol: TCP
+          startupProbe:
+            httpGet: {path: /healthz, port: http}
+            periodSeconds: 2
+            failureThreshold: 60
+          readinessProbe:
+            httpGet: {path: /readyz, port: http}
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          livenessProbe:
+            httpGet: {path: /healthz, port: http}
+            periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 3
+          lifecycle:
+            preStop:
+              exec:
+                # Let endpoints and load balancers drop this pod before uvicorn stops accepting.
+                command: [sleep, "5"]
+          {{- end }}
+          resources:
+            {{- toYaml $c.resources | nindent 12 }}
+          securityContext:
+            {{- include "aiready.containerSecurityContext" $ | nindent 12 }}
+          volumeMounts:
+            {{- include "aiready.platformVolumeMounts" (dict "root" $ "secrets" $c.secrets) | nindent 12 }}
+      volumes:
+        {{- include "aiready.platformVolumes" (dict "root" $ "secrets" $c.secrets) | nindent 8 }}
+{{- end }}
+{{- end }}

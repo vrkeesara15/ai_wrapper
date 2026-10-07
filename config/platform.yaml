@@ -1,0 +1,68 @@
+# =============================================================================
+# AI-Ready platform: settings shared by every service.
+#
+# All files in this directory are deep-merged into one tree (dicts merge, lists concatenate).
+# Environment overlays (e.g. deploy/config-overlays/k8s) are merged last; in an overlay, a key
+# written as "=key" replaces instead of merging.
+#   ${VAR:-default}        environment variable with default
+#   ${secret:name}         secret from AIREADY_SECRET_<NAME> or /run/secrets/<name>
+# =============================================================================
+
+platform:
+  environment: ${AIREADY_ENV:-dev}          # dev | staging | production
+  currency: USD                              # used by cost reports
+
+# Applications onboarded onto the foundation. One entry per existing application.
+# Each app gets its own search collection per tenant, its own budgets, policies and widget origin.
+apps:
+  claims:
+    display_name: Claims portal (demo legacy app)
+    owner_team: claims-platform
+    collection: claims-kb                    # base name (matches ingestion sources); physical collection = <collection>__<app>__<tenant>
+    default_workflow: claims_assistant       # see config/workflows/
+    allowed_origins: ["http://localhost:8000"]
+    data_class_default: internal
+
+# Where services find each other. Empty = in-process (pilot / single container / tests).
+# Set a url to call a service over HTTP; see deploy/config-overlays/*/services.yaml.
+services:
+  gateway: {}
+  guardrails: {}
+  policy: {}
+  registry: {}
+  search: {}
+  embedding: {}
+  rerank: {}
+  rag: {}
+  memory: {}
+  query: {}
+  tools: {}
+  agents: {}
+  observability: {}
+
+# Durable state (model registry, run state, budgets, document registry, approvals, lineage...).
+# sqlite for the pilot; PostgreSQL in production: postgresql+psycopg://user:pass@host/aiready
+state:
+  url: ${AIREADY_STATE_URL:-sqlite:///data/state.db}
+
+# Shared key-value store: rate-limit counters, caches, locks. memory = single process only.
+kv:
+  type: ${AIREADY_KV_TYPE:-memory}           # memory | redis
+  url: ${AIREADY_REDIS_URL:-redis://localhost:6379/0}
+
+# Work queues (ingestion, embedding bulk, agent runs).
+queue:
+  type: ${AIREADY_QUEUE_TYPE:-memory}        # memory | redis | class: your.module:Queue
+  url: ${AIREADY_REDIS_URL:-redis://localhost:6379/0}
+
+# Tamper-evident audit log. The first sink is the system of record used by `aiready audit verify`.
+audit:
+  hmac_key: ${secret:audit_hmac_key}         # signs every record's hash; held by the client
+  sinks:
+    - type: jsonl
+      path: ${AIREADY_AUDIT_PATH:-data/audit/audit.jsonl}
+    # - type: http                           # forward events to the client's SIEM as they happen
+    #   url: https://siem.internal/ingest
+    #   headers: {Authorization: "Bearer ${secret:siem_token}"}
+    # - type: stdout                         # for log shippers (Fluent Bit, Vector...)
+  retention_days: 2555                       # 7 years; enforced by the archival job, never by deletion in place

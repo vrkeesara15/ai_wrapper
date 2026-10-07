@@ -1,0 +1,98 @@
+# Stage 2 "Production": Kubernetes with autoscaling, a redundant gateway, a second model tier for harder
+# tasks, PodDisruptionBudgets, zone network policies, monitoring and secrets from the client's vault.
+#   helm upgrade --install aiready deploy/helm/aiready -n aiready -f deploy/helm/aiready/values-production.yaml \
+#     --set image.digest=sha256:<signed digest> --set global.imageRegistry=<ECR or internal registry>
+global:
+  environment: production
+  stage: production
+
+image:
+  pullPolicy: IfNotPresent            # pin image.digest for every production release
+
+secrets:
+  mode: externalSecrets               # AWS Secrets Manager via ESO (Terraform names: aiready/<key>)
+  externalSecrets:
+    secretStoreRef: {kind: ClusterSecretStore, name: aiready-aws}
+
+serviceAccount:
+  annotations:
+    # IRSA roles from deploy/terraform output irsa_role_arns
+    ingestion: {eks.amazonaws.com/role-arn: "arn:aws:iam::123456789012:role/aiready-ingestion"}
+    ingestion-worker: {eks.amazonaws.com/role-arn: "arn:aws:iam::123456789012:role/aiready-ingestion-worker"}
+    model-loader: {eks.amazonaws.com/role-arn: "arn:aws:iam::123456789012:role/aiready-model-loader"}
+    backup: {eks.amazonaws.com/role-arn: "arn:aws:iam::123456789012:role/aiready-backup"}
+
+state:
+  stateUrl: postgresql+psycopg://aiready@aiready-state.xxxxxx.eu-west-1.rds.amazonaws.com:5432/aiready?sslmode=verify-full
+  redisUrl: rediss://master.aiready-cache.xxxxxx.euw1.cache.amazonaws.com:6379/0
+  kvType: redis
+  queueType: redis
+
+keda:
+  enabled: true
+  redisAddress: master.aiready-cache.xxxxxx.euw1.cache.amazonaws.com:6379
+  redisEnableTLS: true
+
+networkPolicy:
+  enabled: true
+  appCidrs: [10.20.0.0/16]            # existing application, its read replica and the identity provider
+  dataCidrs: [10.0.32.0/20]           # private subnets of RDS / ElastiCache
+
+components:
+  gateway:
+    replicas: 3
+    hpa: {enabled: true, minReplicas: 3, maxReplicas: 12, targetCPU: 65}
+    pdb: {enabled: true, minAvailable: 2}
+  guardrails:
+    hpa: {enabled: true, minReplicas: 2, maxReplicas: 8, targetCPU: 70}
+  rag:
+    hpa: {enabled: true, minReplicas: 2, maxReplicas: 8, targetCPU: 70}
+
+modelServing:
+  pools:
+    chat:
+      nodePool: gpu-a
+      models:
+        - name: chat                   # general model, mid tier
+          engine: vllm
+          path: chat/v1
+          replicas: 2
+          gpus: 1
+          resources:
+            requests: {cpu: "6", memory: 48Gi}
+            limits: {memory: 96Gi}
+          args: [--enable-prefix-caching, --enable-chunked-prefill, --max-model-len=16384, --gpu-memory-utilization=0.90]
+          keda:
+            enabled: true
+            minReplicas: 2             # one warm + one for failure
+            maxReplicas: 6
+            idleReplicas: null
+            query: sum(vllm:num_requests_waiting{model_name="chat"})
+            threshold: "5"
+          canary: {enabled: false, path: chat/v2, replicas: 1}
+        - name: large                  # second model tier for harder tasks (escalation, private)
+          engine: vllm
+          path: large/v1
+          replicas: 1
+          gpus: 4                      # tensor parallel across 4 GPUs of one node
+          resources:
+            requests: {cpu: "16", memory: 160Gi}
+            limits: {memory: 320Gi}
+          args: [--enable-prefix-caching, --max-model-len=32768, --gpu-memory-utilization=0.92]
+          keda:
+            enabled: true
+            minReplicas: 1
+            maxReplicas: 2
+            idleReplicas: null
+            query: sum(vllm:num_requests_waiting{model_name="large"})
+            threshold: "3"
+          canary: {enabled: false}
+
+monitoring:
+  serviceMonitor: {enabled: true, labels: {release: kube-prometheus-stack}}
+  prometheusRule: {enabled: true, labels: {release: kube-prometheus-stack}}
+
+batch:
+  cronJobs:
+    backup-postgres:
+      env: {PGHOST: aiready-state.xxxxxx.eu-west-1.rds.amazonaws.com, PGPORT: "5432", PGUSER: aiready, PGDATABASE: aiready, PGSSLMODE: verify-full}

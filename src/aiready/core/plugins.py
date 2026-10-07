@@ -49,6 +49,19 @@ _BUILTIN_MODULES: dict[str, list[str]] = {
     "embedder": ["aiready.embedding.encoders"],
     "reranker": ["aiready.rerank.scorers"],
     "queue": ["aiready.core.queues"],
+    "session_validator": ["aiready.integration.identity_bridge"],
+    "acl_resolver": ["aiready.integration.file_crawler"],
+    "change_capture": ["aiready.integration.change_capture"],
+    "landing_store": ["aiready.ingestion.landing"],
+    "ocr": ["aiready.ingestion.parsers"],
+    "policy_engine": ["aiready.governance.policy"],
+    "policy_source": ["aiready.governance.policy"],
+    "rag_planner": ["aiready.rag.planner"],
+    "rag_retriever": ["aiready.rag.retriever"],
+    "rag_reranker": ["aiready.rag.rerank_client"],
+    "rag_context_builder": ["aiready.rag.context"],
+    "rag_citation_mapper": ["aiready.rag.citations"],
+    "rag_grounding": ["aiready.rag.grounding"],
 }
 
 

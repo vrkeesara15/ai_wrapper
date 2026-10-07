@@ -1,0 +1,122 @@
+# =============================================================================
+# RAG service (aiready.rag, port 8110, wiring name `rag`).
+#
+# Flow per request: screen input -> policy data.read -> plan (rewrite/split) -> embed -> semantic cache
+# -> hybrid search (top_k) -> weak retrieval check -> rerank (top_n) -> generate via the gateway
+# -> citations + hallucination check (regenerate once, then sources only) -> cache store -> audit.
+# Every value below is a starting default; tune thresholds per client against the evaluation set.
+# =============================================================================
+rag:
+  # Physical search collection, in the search service's layout <base>__<app>__<tenant> (it enforces the
+  # tenant part). {collection} = request.collection, else default_collection, else apps.<app>.collection,
+  # else search.base_collection. A collection name that already contains "__" is used as is.
+  collection_template: "{collection}__{app}__{tenant}"
+  default_collection: null
+  not_found_message: "I could not find this in the available sources."
+  sources_only_message: "I could not produce an answer that is fully supported by the sources. These are the most relevant passages:"
+  # model replies matching any of these are treated as "not found" (never cached, never checked as claims)
+  not_found_patterns:
+    - "could not find (this|that|it|the answer)"
+    - "not (found|available) in the (available )?sources"
+    - "sources do not (contain|mention|say)"
+
+  prompts:
+    source: auto              # auto: prompt registry if deployed, else config/prompts/*.yaml | registry | files
+    prompts_dir: null         # extra directory of prompt files (optional)
+    answer: rag.answer
+    answer_strict: rag.answer_strict   # used for the single regeneration after a failed check
+    plan: rag.plan
+    judge: rag.judge
+    versions: {}              # pin versions, e.g. {rag.answer: v1}; otherwise each prompt's `active` version
+
+  planner:
+    use_llm: auto             # auto: only for follow-ups / multi-part questions | always | never (heuristic)
+    route: small              # gateway route used for rewriting
+    task: rewrite
+    timeout_seconds: 3.0      # on timeout the deterministic heuristic is used
+    max_subqueries: 3
+    max_history_turns: 6
+    min_subquery_words: 3
+
+  retrieval:
+    top_k: 50                 # candidates from hybrid search
+    top_n: 5                  # passages kept after rerank
+    # Weak retrieval: if the best candidate's score is under min_score, answer "not found" - never guess.
+    # Fused hybrid (RRF) scores are rank-based, so the gate reads the dense cosine score by default (a hit
+    # without it is judged on its fused score). Use keyword_score for keyword-only deployments and calibrate
+    # min_score for the embedding model on the evaluation set.
+    min_score: 0.2
+    score_field: dense_score  # dense_score | keyword_score | score
+    min_rerank_score: null    # optional second gate on the best reranked passage
+    embed_query: true         # embed via the gateway (false: the search service embeds / keyword only)
+    embedding_model: embedding
+
+  rerank:
+    enabled: true
+    via: rerank               # rerank: the reranking service | gateway: the gateway's rerank route
+    model: null               # null: the reranking service's default model / the gateway's `reranker` route
+    timeout_seconds: 2.0      # slow or failing reranker -> search order is used and the event is logged
+    max_passage_tokens: 512
+    min_score: null           # drop passages scored under this
+
+  context:
+    max_context_tokens: 3000  # budget for the numbered [n] sources
+    max_passage_tokens: 700
+    history_tokens: 600       # summarised conversation placed before the sources
+    recent_turns: 4
+
+  generation:
+    model: auto               # gateway route/model when the request says "auto"
+    fallback_model: small     # "model slow: fall back to a smaller model"
+    timeout_seconds: 20.0
+    first_token_timeout_seconds: 5.0   # stream mode
+    max_tokens: 800
+    temperature: 0.1
+
+  grounding:
+    method: lexical           # lexical | embedding | hybrid
+    min_support: 0.6          # share of a claim's content words found in its best passage
+    min_grounded_ratio: 1.0   # share of claims that must be supported
+    min_claim_words: 3
+    require_citations: false  # true: a claim without a valid [n] marker is unsupported
+    use_llm_judge: false      # optional LLM judge via gateway route `judge`
+    judge_route: judge
+    judge_timeout_seconds: 8.0
+    embedding_dim: 384
+
+  stream:
+    flag_above: 0.5           # Mode B verdict: grounded -> ok; support ratio >= flag_above -> flag; else withdraw
+
+  cache:
+    enabled: true
+    kv: {type: memory}        # use {type: redis, url: ...} with more than one replica
+    threshold: 0.92           # cosine similarity for a semantic hit
+    default_ttl_seconds: 3600
+    ttl_by_content_type: {}   # chunk.metadata.content_type -> seconds, e.g. {policy: 86400, news: 600}
+    max_entries_per_scope: 5000
+    content_type_field: content_type
+    never_cache_data_classes: [personal, restricted]
+
+  memory:
+    enabled: true             # use the memory service when a request carries session_id
+    record_turns: true
+
+  # Design targets in milliseconds (slide "Latency budget"); overruns are traced and listed in the audit record.
+  latency_budget_ms:
+    screen: 50
+    embed: 30
+    search: 70
+    rerank: 150
+    model_start: 500
+    first_token: 800
+    generate: 4000
+    check: 500
+
+  # Swappable building blocks: replace any with {class: your_pkg.module:Class}.
+  components:
+    planner: {type: default}
+    retriever: {type: default}
+    reranker: {type: default}
+    context_builder: {type: default}
+    citation_mapper: {type: default}
+    grounding: {type: default}

@@ -1,0 +1,621 @@
+# =====================================================================================================
+# AI-Ready Helm chart - default values (stage 2 "Production" shape with conservative sizes).
+#
+#   values-pilot.yaml       Kubernetes pilot: one replica each, one GPU node, no autoscaling
+#   values-production.yaml  stage 2: redundant gateway, autoscaling, second model tier, PDBs, monitoring
+#   values-platform.yaml    stage 3: GPU pool shared across teams, idle pools scale to zero, adapters
+#
+# The architecture is the same at every stage; only the footprint changes. Every platform service runs
+# from the same image; a component is a command + port + zone. Model servers run vLLM / TEI images.
+# =====================================================================================================
+
+global:
+  # Registry prefix for EVERY image (platform and third-party). Set to the internal registry on-prem
+  # (import-bundle.sh prints the exact --set) or to the ECR registry in the cloud.
+  imageRegistry: ""
+  imagePullSecrets: []
+  environment: production            # AIREADY_ENV - shown in traces, audit records and dashboards
+  stage: production                  # pilot | production | platform (informational label)
+  # Default node pool for platform (CPU) pods; matches the Terraform node-group labels.
+  nodeSelector:
+    aiready.io/pool: cpu
+  tolerations: []
+  podAnnotations: {}
+  podLabels: {}
+  # Extra env for every platform container (e.g. AIREADY_LOG_LEVEL).
+  env: {}
+  # Telemetry: OTLP endpoint for traces/metrics/logs (the chart's collector when otelCollector.enabled).
+  otlpEndpoint: http://otel-collector:4317
+  traceCollectorUrl: http://observability:8170
+  # Spread replicas across the three availability zones / racks.
+  topologySpread: true
+
+# The platform image (all services). tag defaults to the chart appVersion; prefer pinning a signed digest.
+image:
+  registry: ghcr.io
+  repository: aiready/aiready
+  tag: ""
+  digest: ""                         # sha256:... - when set, used instead of the tag
+  pullPolicy: IfNotPresent
+
+# -----------------------------------------------------------------------------------------------------
+# Configuration: the repository config/ directory is packaged into the chart (files/config) and mounted
+# at /etc/aiready/config. The k8s overlay (service URLs etc.) is mounted at /etc/aiready/overlay and
+# merged last. Services hot-reload changes (AIREADY_CONFIG_WATCH), so a config change is a ConfigMap
+# update, not a restart.
+# -----------------------------------------------------------------------------------------------------
+config:
+  # Use a ConfigMap you manage (e.g. from a GitOps repo) instead of the packaged files/config.
+  existingConfigMap: ""
+  # Extra overlay values merged last (highest precedence). Keys prefixed with "=" replace.
+  overlay: {}
+  # Restart pods when config changes (off: services hot-reload; on: belt and braces for big changes).
+  rollOnChange: false
+
+# Shared state. Platform defaults are single-process (sqlite / memory); production points them at the
+# managed or in-cluster stores. Secrets (passwords) are referenced from the secret store, not set here.
+state:
+  stateUrl: ""                       # AIREADY_STATE_URL, e.g. postgresql+psycopg://aiready@db.internal:5432/aiready
+  redisUrl: ""                       # AIREADY_REDIS_URL, e.g. rediss://master.cache.internal:6379/0
+  kvType: ""                         # AIREADY_KV_TYPE   (memory | redis)
+  queueType: ""                      # AIREADY_QUEUE_TYPE (memory | redis)
+  qdrantUrl: ""                      # QDRANT_URL; defaults to the in-cluster qdrant when qdrant.enabled
+
+# Legacy application endpoints the integration layer talks to (app zone).
+legacyApp:
+  url: ""                            # LEGACY_APP_URL
+  replicaUrl: ""                     # LEGACY_REPLICA_URL (read replica, never the live database)
+
+# -----------------------------------------------------------------------------------------------------
+# Secrets. Services read /run/secrets/<name> (aiready.core.config.resolve_secret). Three modes:
+#   existingSecret   a Secret you create (kubectl / sealed-secrets); keys = file names below
+#   externalSecrets  External Secrets Operator syncs them from AWS Secrets Manager / Vault / Key Vault
+#   vault            Vault agent injector renders each secret into /run/secrets (no k8s Secret at all)
+# -----------------------------------------------------------------------------------------------------
+secrets:
+  mode: existingSecret
+  existingSecret: aiready-secrets
+  # Every secret key the platform knows about; each component mounts only the ones it lists.
+  keys: [token_signing_key, audit_hmac_key, service_token_key, llm_api_key, db_password, redis_auth_token, qdrant_api_key]
+  externalSecrets:
+    secretStoreRef: {kind: ClusterSecretStore, name: aiready}
+    refreshInterval: 1h
+    # remoteRef key per secret; Terraform stores them as "<name>/<file>" in AWS Secrets Manager.
+    remoteKeyPrefix: aiready/
+  vault:
+    address: https://vault.internal.example:8200   # used by KEDA's TriggerAuthentication in vault mode
+    role: aiready
+    # KV v2 path template (printf): %s is replaced by the secret key.
+    pathTemplate: secret/data/aiready/platform/%s
+    field: value
+    preserveSecretCase: true
+
+serviceAccount:
+  # One ServiceAccount per component (no shared identity). Annotations per component name, e.g. IRSA:
+  #   annotations: {ingestion: {eks.amazonaws.com/role-arn: arn:aws:iam::...:role/aiready-ingestion}}
+  annotations: {}
+
+podSecurity:
+  # Restricted Pod Security Standard. Label the namespace too:
+  #   kubectl label ns aiready pod-security.kubernetes.io/enforce=restricted
+  runAsUser: 10001
+  runAsGroup: 10001
+  fsGroup: 10001
+
+# -----------------------------------------------------------------------------------------------------
+# Platform components. Each: enabled, zone, port (null = worker), module/factory or command, replicas,
+# resources, env, secrets (keys mounted), hpa / keda / pdb, egress (may use the egress proxy).
+# Zones: app (integration layer, reachable from the existing app), platform, model, data, egress.
+# -----------------------------------------------------------------------------------------------------
+defaults:
+  replicas: 2
+  resources:
+    requests: {cpu: 250m, memory: 512Mi}
+    limits: {memory: 1Gi}
+  hpa: {enabled: true, minReplicas: 2, maxReplicas: 6, targetCPU: 70}
+  pdb: {enabled: true, maxUnavailable: 1}
+  secrets: [audit_hmac_key, token_signing_key, service_token_key]
+  terminationGracePeriodSeconds: 30
+
+components:
+  gateway:
+    enabled: true
+    zone: platform
+    port: 8080
+    module: aiready.gateway.api
+    replicas: 3                      # stateless and redundant: never fewer than 3 in production
+    resources:
+      requests: {cpu: "1", memory: 1Gi}
+      limits: {memory: 2Gi}
+    hpa: {enabled: true, minReplicas: 3, maxReplicas: 12, targetCPU: 65}
+    pdb: {enabled: true, minAvailable: 2}
+    egress: true                     # public/escalation model routes leave via the egress proxy only
+    secrets: [audit_hmac_key, token_signing_key, service_token_key, llm_api_key, redis_auth_token]
+    ingress: {enabled: true, host: ai-gateway.internal.example, path: /}
+  gateway-admin:
+    enabled: true
+    zone: platform
+    port: 8081
+    module: aiready.gateway.admin
+    factory: create_admin_app
+    replicas: 1
+    hpa: {enabled: false}
+    pdb: {enabled: false}
+    secrets: [audit_hmac_key, token_signing_key, service_token_key, redis_auth_token]
+  guardrails:
+    enabled: true
+    zone: platform
+    port: 8090
+    module: aiready.guardrails.api
+    resources:
+      requests: {cpu: 500m, memory: 1Gi}
+      limits: {memory: 2Gi}
+  governance:
+    enabled: true
+    zone: platform
+    port: 8091
+    module: aiready.governance.api
+    secrets: [audit_hmac_key, token_signing_key, service_token_key, db_password]
+  embedding:
+    enabled: true
+    zone: platform
+    port: 8100
+    module: aiready.embedding.api
+    secrets: [audit_hmac_key, token_signing_key, service_token_key, redis_auth_token]
+    # Bulk ingestion embeds are queued behind live queries; scale on that queue.
+    keda:
+      enabled: true
+      minReplicas: 2
+      maxReplicas: 8
+      triggers:
+        - type: prometheus
+          metadata:
+            query: sum(aiready_queue_depth{service="embedding"})
+            threshold: "200"
+        - type: cpu
+          metricType: Utilization
+          metadata: {value: "70"}
+  rerank:
+    enabled: true
+    zone: platform
+    port: 8101
+    module: aiready.rerank.api
+  search:
+    enabled: true
+    zone: platform
+    port: 8102
+    module: aiready.search.api
+    secrets: [audit_hmac_key, token_signing_key, service_token_key, qdrant_api_key, db_password, redis_auth_token]
+  rag:
+    enabled: true
+    zone: platform
+    port: 8110
+    module: aiready.rag.api
+    secrets: [audit_hmac_key, token_signing_key, service_token_key, redis_auth_token]
+  memory:
+    enabled: true
+    zone: platform
+    port: 8111
+    module: aiready.memory.api
+    secrets: [audit_hmac_key, token_signing_key, service_token_key, db_password, redis_auth_token, qdrant_api_key]
+  query:
+    enabled: true
+    zone: platform
+    port: 8112
+    module: aiready.query.api
+    reachesApp: true                 # read replica / warehouse lives beside the existing app
+    secrets: [audit_hmac_key, token_signing_key, service_token_key, db_password]
+  agents:
+    enabled: true
+    zone: platform
+    port: 8120
+    module: aiready.agents.api
+    resources:
+      requests: {cpu: 500m, memory: 1Gi}
+      limits: {memory: 2Gi}
+    secrets: [audit_hmac_key, token_signing_key, service_token_key, db_password, redis_auth_token]
+    keda:
+      enabled: true
+      minReplicas: 2
+      maxReplicas: 10
+      triggers:
+        - type: redis
+          metadata:
+            listName: aiready:q:agent_runs            # queue prefix + agents topic
+            listLength: "20"
+          authenticationRef: redis
+        - type: cpu
+          metricType: Utilization
+          metadata: {value: "70"}
+  mcp:
+    enabled: true
+    zone: platform
+    port: 8140
+    module: aiready.mcp.api
+    reachesApp: true                 # each tool is one API-facade endpoint
+  observability:
+    enabled: true
+    zone: platform
+    port: 8170
+    module: aiready.observability.api
+    secrets: [audit_hmac_key, token_signing_key, service_token_key, db_password]
+  ingestion:
+    enabled: true
+    zone: platform
+    port: 8160
+    module: aiready.ingestion.api
+    replicas: 1
+    hpa: {enabled: false}
+    pdb: {enabled: false}
+    reachesApp: true
+    egress: true                     # SaaS connectors (if any) leave via the egress proxy
+    secrets: [audit_hmac_key, token_signing_key, service_token_key, db_password, redis_auth_token]
+  ingestion-worker:
+    enabled: true
+    zone: platform
+    port: null                       # worker: no HTTP port, no probes on /healthz
+    # Scheduling is done once by the ingestion-sync CronJob / ingestion API, so scaled workers only consume.
+    command: [python, -m, aiready.ingestion.worker, --no-scheduler]
+    nodePool: batch                  # runs on the batch / spot pool ("spare capacity")
+    reachesApp: true
+    egress: true
+    terminationGracePeriodSeconds: 120   # finish the current item; unfinished ones return to the queue
+    resources:
+      requests: {cpu: "1", memory: 2Gi}
+      limits: {memory: 4Gi}
+    secrets: [audit_hmac_key, token_signing_key, service_token_key, db_password, redis_auth_token, qdrant_api_key]
+    pdb: {enabled: false}
+    keda:
+      enabled: true
+      minReplicas: 1
+      maxReplicas: 20
+      triggers:
+        - type: redis
+          metadata:
+            listName: aiready:q:ingestion.documents   # queue prefix + ingestion.queue.topic
+            listLength: "50"
+          authenticationRef: redis
+  # ---- integration layer (app zone) ----
+  assistant:
+    enabled: true
+    zone: app
+    port: 8130
+    module: aiready.assistant.api
+    ingress: {enabled: true, host: ai-assistant.internal.example, path: /}
+  identity-bridge:
+    enabled: true
+    zone: app
+    port: 8150
+    module: aiready.integration.bridge_api
+    reachesApp: true                 # validates the existing app session / IdP
+    ingress: {enabled: true, host: ai-identity.internal.example, path: /}
+  facade:
+    enabled: true
+    zone: app
+    port: 8151
+    module: aiready.integration.facade_api
+    reachesApp: true
+  # Dev only; never enabled where real model pools exist.
+  mock-models:
+    enabled: false
+    zone: model
+    port: 8200
+    module: aiready.models.mock_server
+    replicas: 1
+    hpa: {enabled: false}
+    pdb: {enabled: false}
+    secrets: []
+
+# -----------------------------------------------------------------------------------------------------
+# Model serving ("Model serving architecture"): one Deployment + Service per model, grouped in pools.
+# Every server speaks the OpenAI-compatible API, so changing a model is a routing change in the gateway.
+# Weights come from the model store (PVC); an init container copies them to a node-local cache and
+# verifies SHA256SUMS before the server starts. The model zone has no egress at all.
+# -----------------------------------------------------------------------------------------------------
+modelServing:
+  enabled: true
+  images:
+    vllm: {registry: docker.io, repository: vllm/vllm-openai, tag: v0.6.4}
+    tei: {registry: ghcr.io, repository: huggingface/text-embeddings-inference, tag: "1.5"}
+    verifier: {registry: docker.io, repository: busybox, tag: "1.36"}
+  modelStore:
+    # ReadOnlyMany PVC holding <name>/<revision>/ (as written by import-bundle.sh or the S3 sync job).
+    existingClaim: aiready-model-store
+    # Copy weights to node-local storage first ("verified weights, cached on each node").
+    localCache:
+      enabled: true
+      sizeLimit: 200Gi
+  # Shared defaults for GPU pods.
+  gpuTolerations:
+    - {key: nvidia.com/gpu, operator: Exists, effect: NoSchedule}
+  runtimeClassName: ""               # e.g. "nvidia" when the GPU operator requires it
+  prometheusServerAddress: http://prometheus-operated.monitoring.svc:9090
+  pools:
+    chat:
+      nodePool: gpu-a                # "GPU nodes, one model per group"
+      models:
+        - name: chat
+          engine: vllm
+          path: chat/v1              # <model store>/<path>/ holds weights + SHA256SUMS
+          replicas: 1
+          gpus: 1
+          resources:
+            requests: {cpu: "4", memory: 32Gi}
+            limits: {memory: 64Gi}
+          args:
+            - --enable-prefix-caching
+            - --max-model-len=8192
+            - --gpu-memory-utilization=0.90
+          # Scales on queue depth (requests waiting) - "keeps one warm" via minReplicas.
+          keda:
+            enabled: true
+            minReplicas: 1
+            maxReplicas: 4
+            idleReplicas: null       # stage 3: 0 = scale to zero when idle
+            query: sum(vllm:num_requests_waiting{model_name="chat"})
+            threshold: "5"
+          # Rollout controller: a second Deployment with the new version behind the same Service.
+          # Traffic share ~ canary replicas / total replicas; for an exact weight, the gateway routes to
+          # the model-<name>-canary Service by percentage (gateway route weights).
+          canary:
+            enabled: false
+            path: chat/v2
+            replicas: 1
+          adapters: []               # stage 3: [{name: claims-lora, path: adapters/claims/v3}]
+    small:
+      nodePool: gpu-b                # "One shared GPU" - enable GPU time-slicing/MIG on this pool
+      models:
+        - name: small                # router model: sorts requests, keeps the large model for hard ones
+          engine: vllm
+          path: router/v1
+          replicas: 1
+          gpus: 1
+          resources:
+            requests: {cpu: "2", memory: 16Gi}
+            limits: {memory: 24Gi}
+          args: [--enable-prefix-caching, --max-model-len=4096, --gpu-memory-utilization=0.40]
+          keda: {enabled: false}     # "always on"
+          canary: {enabled: false}
+        - name: guard                # guard model: flags unsafe text for guardrails
+          engine: vllm
+          path: guard/v1
+          replicas: 1
+          gpus: 1
+          resources:
+            requests: {cpu: "2", memory: 16Gi}
+            limits: {memory: 24Gi}
+          args: [--max-model-len=4096, --gpu-memory-utilization=0.40]
+          keda: {enabled: false}
+          canary: {enabled: false}
+    embed:
+      nodePool: gpu-b
+      models:
+        - name: embed
+          engine: tei
+          path: embed/v1
+          replicas: 1
+          gpus: 1
+          resources:
+            requests: {cpu: "2", memory: 8Gi}
+            limits: {memory: 16Gi}
+          args: [--max-batch-tokens=16384]
+          keda: {enabled: false}
+          canary: {enabled: false}
+        - name: rerank
+          engine: tei
+          path: rerank/v1
+          replicas: 1
+          gpus: 1
+          resources:
+            requests: {cpu: "2", memory: 8Gi}
+            limits: {memory: 16Gi}
+          args: []
+          keda: {enabled: false}
+          canary: {enabled: false}
+
+# Endpoints the platform uses when modelServing is disabled (e.g. a private endpoint in stage 1/2).
+modelEndpoints:
+  chat: ""
+  small: ""
+  guard: ""
+  embed: ""
+  rerank: ""
+
+# -----------------------------------------------------------------------------------------------------
+# Autoscaling. HPA (CPU) is rendered for components with hpa.enabled and no KEDA; with keda.enabled the
+# ScaledObject owns scaling (KEDA creates the HPA, CPU can be one of its triggers).
+# -----------------------------------------------------------------------------------------------------
+keda:
+  enabled: true
+  prometheusServerAddress: http://prometheus-operated.monitoring.svc:9090
+  pollingInterval: 15
+  cooldownPeriod: 300
+  # Redis used by queue triggers; password from the secret key redis_auth_token.
+  redisAddress: ""                   # host:port, e.g. master.cache.internal:6379
+  redisEnableTLS: true
+
+# -----------------------------------------------------------------------------------------------------
+# Network zones ("Security and governance"). Default deny for every pod, then per-zone allows:
+#   app      <- ingress controller, existing app CIDRs;  -> platform, existing app CIDRs
+#   platform <- app, platform;  -> platform, model, data (in-cluster + dataCidrs), egress proxy
+#   model    <- platform only;  -> nothing (no outbound network)
+#   data     <- platform only
+#   egress   <- platform pods with egress: true;  -> internet :443 (the only pod that may)
+# -----------------------------------------------------------------------------------------------------
+networkPolicy:
+  enabled: true
+  ingressControllerNamespace: ingress-nginx
+  monitoringNamespace: monitoring
+  # Existing application, its database replica and the identity provider.
+  appCidrs: []                       # e.g. [10.20.0.0/16]
+  appPorts: [443, 80, 8000, 5432, 1433, 1521, 3306]
+  # Managed data services outside the cluster (RDS, ElastiCache) - the data zone.
+  dataCidrs: []                      # e.g. [10.0.32.0/20]
+  dataPorts: [5432, 6379, 6333, 6334]
+  dnsNamespace: kube-system
+
+ingress:
+  enabled: true
+  # Internal only: an internal load balancer class. For AWS ALB the annotations below keep it private.
+  className: nginx-internal
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "300"     # streamed answers
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"
+  tls:
+    enabled: true
+    secretName: aiready-internal-tls
+
+# -----------------------------------------------------------------------------------------------------
+# Staged rollout of a platform release ("Release pipeline": staging -> shadow -> canary -> production).
+# The next version is installed as a second release in its own namespace (e.g. aiready-next):
+#   stable  normal production release.
+#   shadow  no ingress of its own; the stable release mirrors real requests to it (replies discarded).
+#           Install it with networkPolicy.appCidrs: [] so its tools cannot write to the existing app.
+#   canary  same hosts as stable, ingress-nginx sends canaryWeight % of requests to it.
+# Promotion = upgrade the stable release to the new digest; rollback = delete the next release (one change).
+# -----------------------------------------------------------------------------------------------------
+rollout:
+  role: stable                       # stable | shadow | canary
+  canaryWeight: 5
+  # Set on the STABLE release while a shadow runs: http://gateway.aiready-next.svc.cluster.local:8080
+  mirrorTarget: ""
+
+# -----------------------------------------------------------------------------------------------------
+# Egress proxy - "the only route out, closed by default". allowlist entries need a policy entry too.
+# -----------------------------------------------------------------------------------------------------
+egressProxy:
+  enabled: true
+  image: {registry: docker.io, repository: ubuntu/squid, tag: 6.6-24.04_edge}
+  replicas: 2
+  allowlist: []                      # e.g. [.api.anthropic.com]
+  nodeSelector: {}                   # cloud with enable_egress_nat: {aiready.io/pool: egress}
+  tolerations: []                    # [{key: aiready.io/egress, operator: Exists, effect: NoSchedule}]
+  resources:
+    requests: {cpu: 100m, memory: 128Mi}
+    limits: {memory: 512Mi}
+
+# -----------------------------------------------------------------------------------------------------
+# In-cluster data stores (data zone). The state DB and Redis are managed services in the cloud topology
+# and a database cluster on-prem; the vector database runs here with replicas and daily snapshots.
+# -----------------------------------------------------------------------------------------------------
+qdrant:
+  enabled: true
+  image: {registry: docker.io, repository: qdrant/qdrant, tag: v1.12.4}
+  replicas: 3
+  storage: {size: 100Gi, storageClassName: ""}
+  snapshotStorage: {size: 100Gi, storageClassName: ""}
+  resources:
+    requests: {cpu: "1", memory: 4Gi}
+    limits: {memory: 8Gi}
+  nodePool: cpu
+
+redis:
+  enabled: false                     # pilot only; use ElastiCache / the on-prem Redis in production
+  image: {registry: docker.io, repository: redis, tag: 7.4-alpine}
+  storage: {size: 10Gi, storageClassName: ""}
+  resources:
+    requests: {cpu: 100m, memory: 256Mi}
+    limits: {memory: 1Gi}
+
+otelCollector:
+  enabled: true
+  image: {registry: docker.io, repository: otel/opentelemetry-collector-contrib, tag: 0.111.0}
+  replicas: 2
+  tempoEndpoint: tempo-distributor.monitoring.svc:4317
+  lokiEndpoint: http://loki-gateway.monitoring.svc/otlp
+  resources:
+    requests: {cpu: 200m, memory: 512Mi}
+    limits: {memory: 1Gi}
+
+monitoring:
+  serviceMonitor: {enabled: true, interval: 30s, labels: {}}
+  prometheusRule: {enabled: true, labels: {}}
+  grafanaDashboard: {enabled: true, labels: {grafana_dashboard: "1"}}
+
+# -----------------------------------------------------------------------------------------------------
+# Batch: CronJobs on the batch pool. Commands use the `aiready` CLI shipped in the image.
+# -----------------------------------------------------------------------------------------------------
+batch:
+  nodePool: batch
+  tolerations:
+    - {key: aiready.io/batch, operator: Equal, value: "true", effect: NoSchedule}
+  backupTarget:
+    existingClaim: aiready-backups   # PVC (NFS / off-site replicated). For S3 targets set env BACKUP_TARGET=s3://...
+  cronJobs:
+    ingestion-sync:
+      enabled: true
+      schedule: "0 1 * * *"
+      command: [aiready, ingest, run, --all-sources]
+      reachesApp: true                 # reads the read replica / file shares beside the existing app
+      secrets: [audit_hmac_key, service_token_key, token_signing_key, db_password, redis_auth_token]
+      activeDeadlineSeconds: 21600
+    eval-nightly:
+      enabled: true
+      schedule: "0 3 * * *"
+      # Live trend for each release: scorecards are written to the state DB and observability.
+      command: [aiready, eval, run, claims, --release, nightly, --safety]
+      secrets: [audit_hmac_key, service_token_key, token_signing_key]
+      activeDeadlineSeconds: 7200
+    audit-verify:
+      enabled: true
+      schedule: "17 * * * *"
+      command: [aiready, audit, verify, --all-chains]
+      secrets: [audit_hmac_key]
+      activeDeadlineSeconds: 1800
+    memory-purge:
+      enabled: true
+      schedule: "30 2 * * *"
+      # Deletes memory facts past their expiry date (memory store retention).
+      # Calls the memory service's purge (POST /v1/memory/purge) with this job's service token.
+      command:
+        - python
+        - -c
+        - "import asyncio; from aiready.core.wiring import connect; print('purged', asyncio.run(connect('memory').purge_expired()))"
+      secrets: [audit_hmac_key, service_token_key, db_password, redis_auth_token, qdrant_api_key]
+      activeDeadlineSeconds: 3600
+    backup-postgres:
+      enabled: true
+      schedule: "0 0 * * *"
+      command:
+        - /bin/sh
+        - -c
+        - export PGPASSWORD="$(cat /run/secrets/db_password)"; exec /opt/aiready/backup/backup-postgres.sh --target /backups/postgres
+      secrets: [db_password]
+      backup: true
+      env: {PGHOST: "", PGPORT: "5432", PGUSER: aiready, PGDATABASE: aiready, PGSSLMODE: require}
+      activeDeadlineSeconds: 7200
+    backup-qdrant:
+      enabled: true
+      schedule: "30 0 * * *"
+      command:
+        - /bin/sh
+        - -c
+        - export QDRANT_API_KEY="$(cat /run/secrets/qdrant_api_key 2>/dev/null)"; exec /opt/aiready/backup/backup-qdrant.sh --target /backups/qdrant
+      secrets: [qdrant_api_key]
+      backup: true
+      activeDeadlineSeconds: 7200
+    backup-config:
+      enabled: true
+      schedule: "45 0 * * *"
+      command: [/opt/aiready/backup/backup-config.sh, --config-dir, /etc/aiready/config, --overlay-dir, /etc/aiready/overlay, --target, /backups/config]
+      secrets: []
+      backup: true
+      activeDeadlineSeconds: 1800
+
+# Fine-tuning ("Fine-tuning pipeline"): an adapter training Job on the off-peak GPU pool. Rendered only
+# when enabled; launch one per run (helm upgrade --set fineTuning.enabled=true,fineTuning.runId=...).
+fineTuning:
+  enabled: false
+  runId: ""                          # required when enabled, e.g. claims-lora-2026-10-07
+  image: {registry: ghcr.io, repository: aiready/aiready-trainer, tag: "0.1.0"}
+  nodePool: gpu-a                    # nights and weekends: schedule with the batch window / scale-up
+  gpus: 1
+  baseModelPath: chat/v1             # pinned base model from the model store (read-only)
+  datasetPath: datasets/claims/v3    # versioned dataset store (masked, consented request logs)
+  outputClaim: aiready-adapters      # adapter registry volume
+  command: [python, -m, aiready_trainer.train]
+  args: [--method, lora, --rank, "16", --epochs, "3"]
+  activeDeadlineSeconds: 43200
+  resources:
+    requests: {cpu: "8", memory: 64Gi}
+    limits: {memory: 96Gi}

@@ -1,0 +1,34 @@
+{{- /*
+Platform configuration. The repository config/ directory is packaged as files/config and mounted at
+/etc/aiready/config with its folder structure restored (keys use "__" for "/"). Services watch the files
+and hot-reload, so `helm upgrade` with changed config changes routes, budgets and policies without a restart.
+*/ -}}
+{{- if not .Values.config.existingConfigMap }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: aiready-config
+  labels:
+    {{- include "aiready.labels" (dict "root" . "name" "config" "zone" "platform") | nindent 4 }}
+data:
+{{- range $path, $_ := .Files.Glob "files/config/**" }}
+  {{ include "aiready.configKey" $path }}: |-
+{{ $.Files.Get $path | indent 4 }}
+{{- end }}
+{{- end }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: aiready-overlay
+  labels:
+    {{- include "aiready.labels" (dict "root" . "name" "overlay" "zone" "platform") | nindent 4 }}
+data:
+{{- range $path, $_ := .Files.Glob "files/overlays/k8s/*.yaml" }}
+  {{ base $path }}: |-
+{{ $.Files.Get $path | indent 4 }}
+{{- end }}
+{{- if .Values.config.overlay }}
+  zz-values-overlay.yaml: |-
+{{ toYaml .Values.config.overlay | indent 4 }}
+{{- end }}

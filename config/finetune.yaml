@@ -1,0 +1,69 @@
+# Fine-tuning pipeline (aiready.finetune). Tune only when all three hold: the task stopped improving after
+# retrieval and prompt work, there are enough approved examples, and someone owns retraining.
+finetune:
+  readiness:
+    plateau_window: 3          # last N releases of the task's evaluation suite
+    min_improvement: 0.01      # gain below this = "stopped improving"
+    min_train_examples: 500
+    min_test_examples: 100
+
+  dataset:
+    store_dir: data/finetune/datasets   # versioned, immutable: <name>/v<N>/{train,val,heldout}.jsonl + manifest.json
+    split: {train: 0.8, val: 0.1, heldout: 0.1}
+    seed: 42
+    min_chars: 2
+    max_chars: 16000
+    drop_refusals: true
+    group_by: user             # all examples of one user stay in one split (no leakage)
+    stratify_by: label         # label | task
+    use_guardrails_mask: true  # mask again with guardrails (+ regex) whatever the log says
+
+  # Pinned base models (used when the model registry is not deployed). Never "main"/"latest".
+  base_models: {}
+  #  llama-3.1-8b:
+  #    repo: /models/meta-llama/Llama-3.1-8B-Instruct
+  #    revision: 0e9e39f249a16976918f6564b8830bc894c89659
+  #    served_name: chat-small
+
+  training:
+    framework: axolotl         # axolotl | llama-factory | peft
+    method: lora               # lora | qlora - base weights always stay frozen
+    image: registry.local/aiready/trainer:0.1.0
+    namespace: aiready-training
+    service_account: aiready-trainer
+    data_volume_claim: aiready-finetune-data
+    output_uri: /data/adapters
+    lora: {r: 16, alpha: 32, dropout: 0.05, target_modules: [q_proj, k_proj, v_proj, o_proj, gate_proj, up_proj, down_proj]}
+    hyperparameters:
+      learning_rate: 0.0002
+      epochs: 3
+      micro_batch_size: 4
+      gradient_accumulation_steps: 4
+      max_seq_len: 4096
+      warmup_ratio: 0.03
+      lr_scheduler: cosine
+      bf16: true
+    gpu_pool:                  # the off-peak GPU pool: nights and weekends
+      node_selector: {aiready.io/pool: gpu-offpeak}
+      tolerations:
+        - {key: nvidia.com/gpu, operator: Exists, effect: NoSchedule}
+        - {key: aiready.io/offpeak, operator: Equal, value: "true", effect: NoSchedule}
+      gpus: 1
+      gpu_resource: nvidia.com/gpu
+      cpu: "8"
+      memory: 64Gi
+      priority_class: aiready-batch-low
+      off_peak_windows: ["Mon-Fri 20:00-06:00", "Sat-Sun 00:00-24:00"]   # UTC
+    active_deadline_seconds: 21600
+
+  tracker: {type: docstore}    # or {type: mlflow, tracking_uri: http://mlflow:5000}
+
+  release:
+    min_margin: 0.0            # adapter must score higher than the base on held-out by more than this
+    scorers: [f1, contains, pii_leak]
+    max_echo_rate: 0.0         # memorisation probes that may reproduce training text
+    echo_ngram: 12             # verbatim tokens that count as an echo
+    prefix_tokens: 24
+    probes: 50
+    approver_roles: [admin, ml-approver]
+    require_distinct_approver: true

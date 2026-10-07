@@ -1,0 +1,59 @@
+# Policy test cases (CI gate): run with aiready.governance.policy.run_policy_tests("config/policies/tests",
+# config_dir="config"). Each case: name, input {action, principal, resource, context}, expect.
+# Facts normally computed by the governance service (registry status, egress_allowed) are given directly.
+policy_tests:
+  - name: signed-in user may use a private model
+    input:
+      action: model.invoke
+      principal: {sub: alice, roles: [user]}
+      resource: {model: general, public: false}
+      context: {data_class: personal}
+    expect:
+      effect: allow
+      matched_rules: [model.private.authenticated]
+      obligations: {max_tokens: 4096, log_full_prompt: false}
+
+  - name: unauthenticated caller is denied
+    input:
+      action: model.invoke
+      principal: {}
+      resource: {model: general}
+    expect: {effect: deny, matched_rules: [base.authenticated]}
+
+  - name: personal data never goes to a public model
+    input:
+      action: model.invoke
+      principal: {sub: alice}
+      resource: {model: vendor, boundary: public}
+      context: {data_class: personal, egress_allowed: true}
+    expect: {effect: deny, matched_rules: [model.public.data_class]}
+
+  - name: public model needs an opened egress route
+    input:
+      action: model.invoke
+      principal: {sub: alice}
+      resource: {model: vendor, boundary: public}
+      context: {data_class: internal}
+    expect: {effect: deny, matched_rules: [model.public.egress_closed]}
+
+  - name: public model through an opened route masks personal data
+    input:
+      action: model.invoke
+      principal: {sub: alice}
+      resource: {model: vendor, boundary: public}
+      context: {data_class: internal, egress_allowed: true}
+    expect: {effect: allow, obligations: {mask_pii: true}}
+
+  - name: draft model is not routable
+    input:
+      action: model.invoke
+      principal: {sub: alice}
+      resource: {model: new, registry_status: draft, boundary: private}
+    expect: {effect: deny, matched_rules: [model.registry.not_approved]}
+
+  - name: other tenant's resource is denied
+    input:
+      action: model.invoke
+      principal: {sub: alice, tenant: acme}
+      resource: {model: general, tenant: globex}
+    expect: {effect: deny, matched_rules: [base.tenant_isolation]}

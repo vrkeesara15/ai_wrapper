@@ -1,0 +1,36 @@
+# =============================================================================
+# Memory service (aiready.memory, port 8111, wiring name `memory`).
+# Session memory: the current conversation, summarised as it grows.
+# Long-term memory: facts and preferences per user, ONLY with consent and ALWAYS with an expiry date.
+# Stored in the shared document store (state.url). Users only ever see their own memory.
+# =============================================================================
+memory:
+  prompts_source: auto        # auto | registry | files (config/prompts/memory.yaml)
+  namespace_sessions: memory_sessions
+  namespace_items: memory_items
+
+  session:
+    summarize_over_tokens: 1500   # older turns are summarised once the stored turns exceed this
+    keep_recent_turns: 6
+    summary_route: small          # gateway route; a deterministic summary is used if it fails
+    summary_max_words: 150
+    summary_timeout_seconds: 5.0
+    prompt: memory.summarize
+    prompt_version: null
+    idle_ttl_hours: 24            # sessions untouched this long are dropped
+    max_turn_chars: 8000
+
+  long_term:
+    require_consent: true         # writes without consent are refused and audited
+    default_ttl_days: 90
+    max_ttl_days: 365             # a policy obligation `max_ttl_days` can lower this
+    max_items_per_user: 500       # beyond this the soonest-expiring items are evicted (audited)
+    screen_writes: true           # guardrails screen facts before storing (blocks memory poisoning)
+    share_across_apps: false
+    min_recall_score: 0.0
+    allowed_kinds: [fact, preference, summary]
+
+  embedding:
+    type: hash                    # hash (offline) | gateway (embedding model through the gateway)
+    model: embedding
+    dim: 384

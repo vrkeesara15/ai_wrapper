@@ -1,0 +1,41 @@
+# =============================================================================
+# Security: identity tokens and the egress policy.
+# =============================================================================
+security:
+  # Short-lived AI-Ready tokens issued by the identity bridge and verified by every service.
+  tokens:
+    issuer: aiready
+    audience: aiready
+    # HS256 with ${secret:token_signing_key} for small installs; RS256/ES256 in production with the private
+    # key only on the identity bridge and the public key on every verifier:
+    #   private_key: ${secret:token_private_key}
+    #   public_key: ${secret:token_public_key}
+    algorithm: HS256
+    ttl_seconds: 900
+    # Accept tokens from the client's own IdP directly (OIDC, keys from JWKS). Claims are mapped onto
+    # roles / groups / tenant.
+    trusted_issuers: []
+    #  - issuer: https://login.example.com/realms/acme
+    #    jwks_url: https://login.example.com/realms/acme/protocol/openid-connect/certs
+    #    audience: aiready
+    #    algorithms: [RS256]
+    #    tenant: acme
+    #    claims: {roles: realm_access.roles, groups: groups, sub: preferred_username}
+
+  # Egress: the only route out of the client's boundary. Closed by default; each destination opens it for
+  # named data classes (and optionally only for some roles / groups). The same list is exported for the
+  # egress proxy: GET /v1/egress/allowlist?format=squid|envoy|json on the governance service.
+  # Destinations can also be opened / closed at runtime by a security admin (audited).
+  egress:
+    default: closed
+    proxy: {}
+    #   url: http://egress-proxy:3128
+    destinations: []
+    #  - name: vendor-llm
+    #    hosts: [api.vendor.example]
+    #    ports: [443]
+    #    aliases: [public-proprietary, escalation]   # model names / categories that route here
+    #    data_classes: [public, internal]            # never personal or restricted
+    #    roles: []                                   # empty = any signed-in user
+    #    purpose: escalation model for long reasoning tasks
+    #    owner: security-lead

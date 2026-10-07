@@ -1,0 +1,87 @@
+# =============================================================================
+# Structured-data query service (aiready.query, port 8112, wiring name `query`; MCP tool `query_data`).
+# Route -> (approved metric | generated SQL) -> validate -> execute on the READ REPLICA -> check -> format.
+# =============================================================================
+query:
+  dialect: null               # sqlglot dialect; derived from replica_url when null
+  prompts_source: auto
+  allow_generated_sql: true   # false: approved metrics only
+
+  executor:
+    # REQUIRED. The read replica or warehouse - never the live database.
+    #   postgresql+psycopg://reader@replica.internal/app   (the account should itself be read-only)
+    replica_url: ${AIREADY_QUERY_REPLICA_URL:-sqlite:///data/replica.db}
+    live_db_urls: []          # the primary database URL(s); refused if replica_url points at one
+    timeout_seconds: 15
+    # Run as the user: statements executed first with :tenant, :user, :app bound, e.g. for row-level security
+    #   - "SELECT set_config('app.tenant', :tenant, true)"
+    session_setup: []
+    max_estimated_cost: null  # PostgreSQL EXPLAIN total-cost limit
+    pool_size: 5
+
+  validator:
+    default_limit: 200
+    max_rows: 1000            # hard cap
+    max_joins: 6
+    forbid_cartesian: true
+    default_schemas: [public, main, dbo]
+    reserved_params: [tenant, user, app]   # bound from the verified identity, never from the request
+    # denied_functions: [...]  # defaults cover sleep, file access, dblink, set_config, xp_cmdshell...
+
+  writer:
+    route: auto               # gateway route for the query writer
+    task: sql
+    timeout_seconds: 20
+    max_tokens: 600
+    prompt: query.sql_writer
+    prompt_version: null
+
+  routing:
+    metric_match_threshold: 0.8   # share of a metric name/synonym's words found in the question
+
+  # Access rules: which tables/columns each role may query with generated SQL (union across roles).
+  access:
+    # Applied to every query (metrics and generated), ANDed with role filters and policy obligations.
+    row_filters:
+      claims: "tenant_id = :tenant"
+      customers: "tenant_id = :tenant"
+    roles:
+      analyst:
+        tables:
+          claims: {columns: "*"}
+          customers: {columns: [id, region, segment]}   # no names or e-mail addresses
+      claims_manager:
+        tables:
+          claims: {columns: "*"}
+          customers: {columns: "*"}
+
+  # Schema catalog shown to the query writer (merged with what is reflected from the replica).
+  catalog:
+    reflect: true
+    reflect_schema: null
+    tables:
+      claims:
+        description: One row per insurance claim
+        columns:
+          id: Claim id
+          tenant_id: Owning tenant (filtered automatically)
+          customer_id: The customer who filed the claim
+          region: Sales region (north, south, east, west)
+          status: open, approved, paid or rejected
+          amount: Claimed amount in the account currency
+          created_at: Date the claim was filed (ISO date)
+        primary_key: [id]
+        foreign_keys:
+          - {column: customer_id, references: customers.id}
+        sample_queries:
+          - "SELECT status, COUNT(*) FROM claims GROUP BY status"
+      customers:
+        description: Policy holders
+        columns:
+          id: Customer id
+          tenant_id: Owning tenant (filtered automatically)
+          name: {description: Full name, personal: true}
+          email: {description: E-mail address, personal: true}
+          region: Home region
+          segment: retail or business
+        primary_key: [id]

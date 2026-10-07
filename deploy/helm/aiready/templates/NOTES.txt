@@ -1,0 +1,16 @@
+AI-Ready {{ .Chart.AppVersion }} installed as release "{{ .Release.Name }}" in namespace "{{ .Release.Namespace }}" (stage: {{ .Values.global.stage }}).
+
+Checks:
+  kubectl -n {{ .Release.Namespace }} get pods -L aiready.io/zone,aiready.io/pool
+  kubectl -n {{ .Release.Namespace }} port-forward svc/gateway 8080:8080 && curl -s localhost:8080/readyz
+
+Before real traffic:
+  * Namespace enforces the restricted Pod Security Standard:
+      kubectl label ns {{ .Release.Namespace }} pod-security.kubernetes.io/enforce=restricted
+  * Secrets mode "{{ .Values.secrets.mode }}": keys {{ join ", " .Values.secrets.keys }} must exist.
+  * Network zones are {{ if .Values.networkPolicy.enabled }}ENFORCED (default deny){{ else }}NOT enforced - enable networkPolicy for production{{ end }}.
+  * Egress proxy allow-list: {{ if .Values.egressProxy.allowlist }}{{ join ", " .Values.egressProxy.allowlist }}{{ else }}empty (no route to the internet){{ end }}.
+{{- if .Values.modelServing.enabled }}
+  * Model store PVC "{{ .Values.modelServing.modelStore.existingClaim }}" must hold each model path with a SHA256SUMS file.
+{{- end }}
+  * Release gate: aiready eval gate must pass for this version before production traffic (see docs/deployment.md).

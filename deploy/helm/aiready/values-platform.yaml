@@ -1,0 +1,108 @@
+# Stage 3 "Platform": one GPU pool shared across teams, idle capacity scales to zero, adapters tuned on the
+# client's own domain served on the frozen base model. Layer on top of production:
+#   helm upgrade --install aiready deploy/helm/aiready -n aiready \
+#     -f deploy/helm/aiready/values-production.yaml -f deploy/helm/aiready/values-platform.yaml
+global:
+  stage: platform
+
+components:
+  gateway:
+    hpa: {enabled: true, minReplicas: 3, maxReplicas: 24, targetCPU: 65}
+  agents:
+    keda:
+      enabled: true
+      minReplicas: 2
+      maxReplicas: 30
+      triggers:
+        - type: redis
+          metadata: {listName: "aiready:q:agent_runs", listLength: "20"}
+          authenticationRef: redis
+  ingestion-worker:
+    keda:
+      enabled: true
+      minReplicas: 0                  # no backlog, no workers
+      maxReplicas: 40
+      triggers:
+        - type: redis
+          metadata: {listName: "aiready:q:ingestion.documents", listLength: "50", activationListLength: "1"}
+          authenticationRef: redis
+
+modelServing:
+  pools:
+    chat:
+      nodePool: gpu-a                 # the shared pool: every team's routes land here through the gateway
+      models:
+        - name: chat
+          engine: vllm
+          path: chat/v1
+          replicas: 2
+          gpus: 1
+          resources:
+            requests: {cpu: "6", memory: 48Gi}
+            limits: {memory: 96Gi}
+          args: [--enable-prefix-caching, --enable-chunked-prefill, --max-model-len=16384, --gpu-memory-utilization=0.90, --max-lora-rank=64]
+          keda:
+            enabled: true
+            minReplicas: 2
+            maxReplicas: 12
+            idleReplicas: null
+            query: sum(vllm:num_requests_waiting{model_name=~"chat|claims-lora|fraud-lora"})
+            threshold: "5"
+          canary: {enabled: false, path: chat/v2, replicas: 1}
+          # Domain adapters (tuned via the fine-tuning Job, gated, approved in the adapter registry).
+          # Each is served as its own model name; the gateway routes only that task to it.
+          adapters:
+            - {name: claims-lora, path: adapters/claims-lora/v3}
+            - {name: fraud-lora, path: adapters/fraud-lora/v1}
+        - name: large
+          engine: vllm
+          path: large/v1
+          replicas: 1
+          gpus: 4
+          resources:
+            requests: {cpu: "16", memory: 160Gi}
+            limits: {memory: 320Gi}
+          args: [--enable-prefix-caching, --max-model-len=32768, --gpu-memory-utilization=0.92]
+          # Idle capacity scales to zero: the large tier sleeps until a hard request queues for it.
+          # The gateway falls back to the chat tier (or queues) while it cold-starts.
+          keda:
+            enabled: true
+            minReplicas: 1
+            maxReplicas: 4
+            idleReplicas: 0
+            activationThreshold: "0"
+            cooldownPeriod: 1800
+            query: sum(vllm:num_requests_waiting{model_name="large"}) + sum(rate(aiready_requests_total{service="gateway",model="large"}[10m]))
+            threshold: "3"
+          canary: {enabled: false}
+    small:
+      nodePool: gpu-b
+      models:
+        - name: small
+          engine: vllm
+          path: router/v1
+          replicas: 2
+          gpus: 1
+          resources:
+            requests: {cpu: "2", memory: 16Gi}
+            limits: {memory: 24Gi}
+          args: [--enable-prefix-caching, --max-model-len=4096, --gpu-memory-utilization=0.40]
+          keda: {enabled: false}       # always on
+          canary: {enabled: false}
+        - name: guard
+          engine: vllm
+          path: guard/v1
+          replicas: 2
+          gpus: 1
+          resources:
+            requests: {cpu: "2", memory: 16Gi}
+            limits: {memory: 24Gi}
+          args: [--max-model-len=4096, --gpu-memory-utilization=0.40]
+          keda: {enabled: false}
+          canary: {enabled: false}
+
+# Off-peak adapter training on the shared pool (nights and weekends). Enable per run.
+fineTuning:
+  enabled: false
+  nodePool: gpu-a
+  priorityClassName: aiready-batch-low

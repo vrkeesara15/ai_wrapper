@@ -1,0 +1,49 @@
+# =============================================================================
+# Policy domain: base - rules that apply to every action.
+#
+# Policy files are merged into the configuration tree under `policies.<domain>` and hot-reloaded by the
+# governance service (no restart). Rule format (see aiready/governance/policy.py):
+#   id           unique rule id (appears in decisions, audit records and explain traces)
+#   description  why the rule exists (shown as the decision reason unless `reason` is set)
+#   action       glob or list of globs over the action name (model.invoke, tool.call, data.read ...)
+#   effect       allow | deny | require_approval | obligate (obligate only adds obligations)
+#   when         condition over principal.*, resource.*, context.* (safe expression language, never eval):
+#                  {path: value} eq, {path: [a, b]} in, {path: {op: value}} with op in
+#                  eq ne in not_in contains not_contains any_in all_in glob regex gt gte lt lte exists empty;
+#                  combine with all: [...], any: [...], not: {...}; compare fields with {ref: principal.sub}
+#   obligations  what the caller must do when the decision is allow/require_approval
+#                (mask_pii, max_tokens, require_citations, log_full_prompt, no_cache, max_rows ...)
+# Combining: deny overrides require_approval overrides allow. No match -> governance.policy.defaults.
+# Facts the caller cannot assert are filled in by the governance service before rules run:
+#   resource.registry_status / boundary / data_classes_allowed / disabled (model registry),
+#   context.egress_allowed (egress policy), context.model_allows_data_class.
+# Policy tests live in config/policies/tests/ and run in CI (aiready.governance.policy.run_policy_tests).
+# =============================================================================
+policies:
+  base:
+    version: 1.0.0
+    description: Platform-wide guarantees.
+    rules:
+      - id: base.authenticated
+        description: Every governed action needs an authenticated principal.
+        action: "*"
+        effect: deny
+        when:
+          principal.authenticated: {ne: true}
+
+      - id: base.tenant_isolation
+        description: A principal never acts on another tenant's resources.
+        action: "*"
+        effect: deny
+        when:
+          all:
+            - resource.tenant: {exists: true}
+            - principal.tenant: {exists: true}
+            - resource.tenant: {ne: {ref: principal.tenant}}
+
+      - id: base.identity.token_issue
+        description: The identity bridge may issue a token to any user the client's login vouched for.
+        action: identity.token_issue
+        effect: allow
+        when:
+          principal.sub: {exists: true}

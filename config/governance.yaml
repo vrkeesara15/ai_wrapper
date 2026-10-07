@@ -1,0 +1,95 @@
+# =============================================================================
+# Governance service (port 8091): policy engine, model / prompt / adapter registries, access reviews,
+# incident runbook. Wiring names: `policy`, `registry` (see services.* in platform.yaml).
+# Policy rules themselves live in config/policies/*.yaml; egress routes in security.yaml.
+# =============================================================================
+governance:
+  policy:
+    # Engine answering decide(): `local` (built-in rule engine) or `opa` (the client's Open Policy Agent):
+    #   engine: {type: opa, url: "http://opa:8181", package: aiready/authz, timeout: 2.0}
+    # or a custom engine: {class: acme_ai.policy:Engine}
+    engine: {type: local}
+    # Where the local engine reads rules (policy_source plugins). `config` = the `policies` section built
+    # from config/policies/*.yaml. Add a directory mounted from a policy repository with:
+    #   - {type: directory, paths: [/etc/aiready/policies]}
+    sources:
+      - {type: config, path: policies}
+    # Semver label of the bundle; decisions carry "<label>+<content hash>" so each one is traceable to rules.
+    version: 1.0.0
+    # Effect when no rule matches, by action prefix (longest prefix wins; "" is the fallback).
+    # Sensitive actions default to deny; low-risk orchestration actions default to allow because every model,
+    # tool and data access they lead to is checked on its own.
+    defaults:
+      "": deny
+      "model.": deny
+      "tool.": deny
+      "facade.": deny
+      "data.": deny
+      "sql.": deny
+      "memory.": deny
+      "egress.": deny
+      "admin.": deny
+      "identity.": deny
+      "agent.": allow
+      "feedback.": allow
+      "guardrails.": allow
+      "chat.": allow
+    # Also audit allow decisions (denials and approval requests are always audited). Noisy; off by default.
+    audit_allows: false
+    # Seconds between modification-time checks of `directory` sources (config sources reload with the config).
+    reload_interval: 2.0
+
+  registry:
+    # Treat models unknown to the registry as "unregistered" (denied by model.registry.not_approved).
+    # Keep false for a pilot that has not registered its models yet; set true in production.
+    require_registration: false
+    # Evidence a model record must carry before approval (release gate).
+    approval_requires: [licence, weights_checksum]
+    # The person who registered a model or adapter may not approve it.
+    four_eyes: true
+    # An adapter must beat its base model on every shared held-out metric before approval.
+    adapter_must_beat_base: true
+    # Models declared here are loaded on start if not registered yet (status as written, audited as "seed").
+    # Slots follow the reference architecture's "Model registry" slide.
+    models: []
+    #  - name: general
+    #    version: "2025-01"
+    #    slot: general
+    #    availability: private_gpu          # private_gpu | private_shared_gpu | private_endpoint | public_api | hosted_open_weight
+    #    type: chat
+    #    originality: original              # original | tuned_adapter | original_quantised | proprietary
+    #    parameters_b: 32                   # -> parameter_tier mid (small <10B, mid 10-40B, large >40B)
+    #    base_model: open-weight-family
+    #    licence: apache-2.0
+    #    context_length: 32768
+    #    weights_checksum: sha256:...
+    #    data_classes_allowed: [public, internal, confidential, personal]
+    #    status: approved
+    #    approved_by: security-review-2025-01
+
+  access_review:
+    # Group / role membership exported from the client's directory (or listed here for a pilot).
+    group_members: {}
+    #   claims-team: [alice, bob]
+    role_members: {}
+    #   analyst: [alice]
+    # Data collections included in the review (name -> access tags).
+    collections: {}
+    #   claims: [claims-team]
+    data_classes: [public, internal, confidential, personal, restricted]
+    stale_after_days: 90        # a grant nobody used for this long is flagged
+    review_period_days: 90      # a signed review is due every period
+
+  # Role lists gating the governance API (the admin.* policy rules apply on top).
+  api_roles:
+    registry_write: [ai-engineer, model-approver, admin]
+    registry_approve: [model-approver]
+    policy_admin: [security-admin, policy-admin]
+    security: [security-admin]
+    access_review: [security-admin, access-reviewer]
+
+  # Deny-list for revoked tokens / subjects and closed routes. Use redis with more than one replica:
+  #   kv: {type: redis, url: "${AIREADY_REDIS_URL:-redis://localhost:6379/0}"}
+  kv: {type: memory}
+  # How long a revoked token id stays listed (>= the longest token lifetime in use).
+  revocation_ttl_seconds: 86400

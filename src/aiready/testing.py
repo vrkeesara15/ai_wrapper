@@ -134,3 +134,6 @@ class PassThroughGuardrails:
 
     async def mask(self, text: str) -> ScreenResult:
         return ScreenResult(allowed=True, text=text)
+
+    async def screen_document(self, text: str, *, context: dict[str, Any] | None = None) -> ScreenResult:
+        return ScreenResult(allowed=True, text=text)

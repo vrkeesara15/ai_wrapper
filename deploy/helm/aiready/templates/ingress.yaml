@@ -1,0 +1,47 @@
+{{- /* Internal-only ingress: an internal ingress class / internal load balancer, never a public address. */ -}}
+{{- $role := .Values.rollout.role }}
+{{- if not (has $role (list "stable" "shadow" "canary")) }}{{ fail "rollout.role must be stable, shadow or canary" }}{{ end }}
+{{- if and .Values.ingress.enabled (ne $role "shadow") }}
+{{- range $name, $c := .Values.components }}
+{{- if and $c.enabled $c.port $c.ingress $c.ingress.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "aiready.labels" (dict "root" $ "name" $name "zone" $c.zone) | nindent 4 }}
+  annotations:
+    aiready.io/exposure: internal
+    aiready.io/rollout-role: {{ $role }}
+    {{- if eq $role "canary" }}
+    nginx.ingress.kubernetes.io/canary: "true"
+    nginx.ingress.kubernetes.io/canary-weight: {{ $.Values.rollout.canaryWeight | quote }}
+    {{- else if and $.Values.rollout.mirrorTarget (eq $name "gateway") }}
+    nginx.ingress.kubernetes.io/mirror-target: {{ printf "%s$request_uri" $.Values.rollout.mirrorTarget | quote }}
+    nginx.ingress.kubernetes.io/mirror-request-body: "on"
+    {{- end }}
+    {{- with $.Values.ingress.annotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  ingressClassName: {{ $.Values.ingress.className }}
+  {{- if $.Values.ingress.tls.enabled }}
+  tls:
+    - hosts: [{{ $c.ingress.host | quote }}]
+      secretName: {{ $.Values.ingress.tls.secretName }}
+  {{- end }}
+  rules:
+    - host: {{ $c.ingress.host | quote }}
+      http:
+        paths:
+          - path: {{ $c.ingress.path | default "/" }}
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ $name }}
+                port:
+                  name: http
+{{- end }}
+{{- end }}
+{{- end }}

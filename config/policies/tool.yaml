@@ -1,0 +1,61 @@
+# Policy domain: tool - approval gates ("Reads run freely. Writes, payments and deletions wait for a person.")
+# Applies to MCP tool calls (tool.call) and API facade calls (facade.call). The tool runtime verifies the
+# approval record itself; the policy only asks whether one is needed.
+policies:
+  tool:
+    version: 1.0.0
+    description: Tool and facade calls.
+    rules:
+      - id: tool.read.allow
+        description: Read-only tools run freely for signed-in users.
+        action: [tool.call, facade.call]
+        effect: allow
+        when:
+          principal.authenticated: true
+          any:
+            - resource.effect: read
+            - resource.effect: {exists: false}
+
+      - id: tool.side_effect.require_approval
+        description: Writes, payments and deletions wait for a person.
+        action: [tool.call, facade.call]
+        effect: require_approval
+        when:
+          resource.effect: [write, payment, delete]
+          context.approval_id: {exists: false}
+        obligations:
+          approval_roles: [approver]
+
+      - id: tool.side_effect.approved
+        description: A side-effecting call carrying an approval id (verified by the tool runtime).
+        action: [tool.call, facade.call]
+        effect: allow
+        when:
+          principal.authenticated: true
+          resource.effect: [write, payment, delete]
+          context.approval_id: {exists: true}
+
+      - id: tool.required_roles
+        description: The tool declares roles the caller does not hold.
+        action: tool.call
+        effect: deny
+        when:
+          resource.required_roles: {empty: false}
+          not:
+            principal.roles: {any_in: {ref: resource.required_roles}}
+
+      - id: tool.unknown_effect
+        description: A tool with an unrecognised effect is never run.
+        action: [tool.call, facade.call]
+        effect: deny
+        when:
+          resource.effect: {exists: true, not_in: [read, write, payment, delete]}
+
+      - id: tool.obligations.personal
+        description: Personal data returned by a tool is masked before it reaches a model.
+        action: [tool.call, facade.call]
+        effect: obligate
+        when:
+          resource.data_class: [personal, restricted]
+        obligations:
+          mask_pii: true

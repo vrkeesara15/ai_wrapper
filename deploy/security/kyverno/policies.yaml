@@ -1,0 +1,89 @@
+# Kyverno alternative to Gatekeeper: verifies cosign signatures natively and restricts registries.
+# The public key is the release signing key (`cosign.pub`), distributed out of band.
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: aiready-verify-image-signatures
+  annotations:
+    policies.kyverno.io/title: AI-Ready images must be signed
+    policies.kyverno.io/description: >-
+      Every AI-Ready image (platform and model-serving) must carry a valid cosign signature from the
+      release key, and be pinned to the signed digest.
+spec:
+  validationFailureAction: Enforce
+  background: false
+  webhookTimeoutSeconds: 30
+  rules:
+    - name: verify-cosign
+      match:
+        any:
+          - resources:
+              kinds: [Pod]
+              namespaces: [aiready, aiready-models, aiready-batch]
+      verifyImages:
+        - imageReferences:
+            - "registry.internal.example/*"
+            - "*.dkr.ecr.*.amazonaws.com/*"
+          mutateDigest: true
+          verifyDigest: true
+          required: true
+          attestors:
+            - entries:
+                - keys:
+                    publicKeys: |-
+                      -----BEGIN PUBLIC KEY-----
+                      REPLACE_WITH_RELEASE_COSIGN_PUBLIC_KEY
+                      -----END PUBLIC KEY-----
+          attestations:
+            # The SBOM attestation attached by `make sign` / CI must be present.
+            - type: https://spdx.dev/Document
+              attestors:
+                - entries:
+                    - keys:
+                        publicKeys: |-
+                          -----BEGIN PUBLIC KEY-----
+                          REPLACE_WITH_RELEASE_COSIGN_PUBLIC_KEY
+                          -----END PUBLIC KEY-----
+---
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: aiready-internal-registry-only
+spec:
+  validationFailureAction: Enforce
+  background: true
+  rules:
+    - name: internal-registry
+      match:
+        any:
+          - resources:
+              kinds: [Pod]
+              namespaces: [aiready, aiready-models, aiready-batch]
+      validate:
+        message: "Images must come from the internal registry."
+        pattern:
+          spec:
+            =(initContainers):
+              - image: "registry.internal.example/* | *.dkr.ecr.*.amazonaws.com/*"
+            containers:
+              - image: "registry.internal.example/* | *.dkr.ecr.*.amazonaws.com/*"
+---
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: aiready-no-automount-token
+spec:
+  validationFailureAction: Enforce
+  background: true
+  rules:
+    - name: no-automount
+      match:
+        any:
+          - resources:
+              kinds: [Pod]
+              namespaces: [aiready, aiready-models]
+      validate:
+        message: "AI-Ready pods must not mount a Kubernetes API token (automountServiceAccountToken: false)."
+        pattern:
+          spec:
+            automountServiceAccountToken: false

@@ -92,6 +92,10 @@ class Guardrails(Protocol):
 
     async def mask(self, text: str) -> ScreenResult: ...
 
+    async def screen_document(self, text: str, *, context: dict[str, Any] | None = None) -> ScreenResult:
+        """Screen retrieved or ingested content for indirect prompt injection and personal data."""
+        ...
+
 
 # =========================================================================== gateway
 

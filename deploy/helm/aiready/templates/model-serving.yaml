@@ -1,0 +1,257 @@
+{{- /*
+Model serving pools ("Model serving architecture"). One Deployment + Service per model:
+  chat pool   GPU pool A - chat model(s), prefix caching, scales on requests waiting (KEDA)
+  small pool  shared GPU - router model + guard model, always on
+  embed pool  shared GPU - embedding + rerank (TEI), bulk ingestion queued behind live queries
+Weights: the model store PVC holds <path>/ with SHA256SUMS. The verify-weights init container copies them to
+node-local cache (optional) and refuses to start the server if any checksum differs.
+Rollout controller: canary.enabled adds a second Deployment (track=canary) with the new weights behind the
+same Service, plus a model-<name>-canary Service the gateway can weight explicitly. Rollback = disable it.
+*/ -}}
+{{- if .Values.modelServing.enabled }}
+{{- range $poolName, $pool := .Values.modelServing.pools }}
+{{- range $m := $pool.models }}
+{{- $ctx := dict "root" $ "poolName" $poolName "pool" $pool "m" $m "track" "stable" "path" $m.path "replicas" $m.replicas }}
+---
+{{ include "aiready.modelDeployment" $ctx }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: model-{{ $m.name }}
+  labels:
+    {{- include "aiready.labels" (dict "root" $ "name" (printf "model-%s" $m.name) "zone" "model") | nindent 4 }}
+    aiready.io/pool: {{ $poolName }}
+    aiready.io/model-metrics: "true"
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "aiready.selectorLabels" (dict "root" $ "name" (printf "model-%s" $m.name)) | nindent 4 }}
+  ports:
+    - {name: http, port: 8000, targetPort: http, protocol: TCP}
+    {{- if eq $m.engine "tei" }}
+    - {name: metrics, port: 9000, targetPort: metrics, protocol: TCP}
+    {{- end }}
+{{- if and $m.canary $m.canary.enabled }}
+{{- $cctx := dict "root" $ "poolName" $poolName "pool" $pool "m" $m "track" "canary" "path" $m.canary.path "replicas" ($m.canary.replicas | default 1) }}
+---
+{{ include "aiready.modelDeployment" $cctx }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: model-{{ $m.name }}-canary
+  labels:
+    {{- include "aiready.labels" (dict "root" $ "name" (printf "model-%s" $m.name) "zone" "model") | nindent 4 }}
+    aiready.io/pool: {{ $poolName }}
+    aiready.io/track: canary
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "aiready.selectorLabels" (dict "root" $ "name" (printf "model-%s" $m.name)) | nindent 4 }}
+    aiready.io/track: canary
+  ports:
+    - {name: http, port: 8000, targetPort: http, protocol: TCP}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- end }}
+
+{{- define "aiready.modelDeployment" -}}
+{{- $root := .root -}}
+{{- $m := .m -}}
+{{- $ms := $root.Values.modelServing -}}
+{{- $comp := printf "model-%s" $m.name -}}
+{{- $name := ternary $comp (printf "%s-canary" $comp) (eq .track "stable") -}}
+{{- $cache := $ms.modelStore.localCache.enabled -}}
+{{- $modelDir := printf "/models/%s" $m.name -}}
+{{- $sel := merge (include "aiready.selectorLabels" (dict "root" $root "name" $comp) | fromYaml) (dict "aiready.io/track" .track) -}}
+{{- $tol := concat ($ms.gpuTolerations | default list) (.pool.tolerations | default list) -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "aiready.labels" (dict "root" $root "name" $comp "zone" "model") | nindent 4 }}
+    aiready.io/pool: {{ .poolName }}
+    aiready.io/track: {{ .track }}
+    aiready.io/model-path: {{ .path | replace "/" "_" | quote }}
+spec:
+  {{- if not (and (eq .track "stable") $root.Values.keda.enabled $m.keda $m.keda.enabled) }}
+  replicas: {{ .replicas }}
+  {{- end }}
+  revisionHistoryLimit: 3
+  selector:
+    matchLabels:
+      {{- toYaml $sel | nindent 6 }}
+  strategy:
+    # A new pod must load and verify weights before the old one goes; needs one spare GPU per model.
+    type: RollingUpdate
+    rollingUpdate: {maxSurge: 1, maxUnavailable: 0}
+  template:
+    metadata:
+      labels:
+        {{- include "aiready.labels" (dict "root" $root "name" $comp "zone" "model") | nindent 8 }}
+        aiready.io/pool: {{ .poolName }}
+        aiready.io/track: {{ .track }}
+    spec:
+      serviceAccountName: model-loader
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      terminationGracePeriodSeconds: 60
+      {{- with $ms.runtimeClassName }}
+      runtimeClassName: {{ . }}
+      {{- end }}
+      {{- include "aiready.imagePullSecrets" $root | nindent 6 }}
+      securityContext:
+        {{- include "aiready.podSecurityContext" $root | nindent 8 }}
+      {{- include "aiready.scheduling" (dict "root" $root "pool" .pool.nodePool "tolerations" $tol "selector" $sel "spread" true) | nindent 6 }}
+      initContainers:
+        - name: verify-weights
+          image: {{ include "aiready.image" (dict "root" $root "image" $ms.images.verifier) }}
+          command: [/bin/sh, -c]
+          args:
+            - |
+              set -eu
+              verify() {
+                src="/model-store/$1"; dst="$2"
+                [ -f "$src/SHA256SUMS" ] || { echo "no SHA256SUMS in $src - refusing unverified weights" >&2; exit 1; }
+                {{- if $cache }}
+                if [ -f "$dst/.verified" ] && cmp -s "$src/SHA256SUMS" "$dst/SHA256SUMS"; then
+                  echo "cache hit $dst"; return 0
+                fi
+                rm -rf "$dst"; mkdir -p "$dst"
+                cp -a "$src/." "$dst/"
+                {{- else }}
+                dst="$src"
+                {{- end }}
+                cd "$dst" && sha256sum -c SHA256SUMS || { echo "checksum mismatch in $1" >&2; exit 1; }
+                {{- if $cache }}
+                touch "$dst/.verified"
+                {{- end }}
+                echo "verified $1"
+              }
+              verify {{ .path | quote }} {{ $modelDir | quote }}
+              {{- range $a := $m.adapters }}
+              verify {{ $a.path | quote }} {{ printf "/models/adapters/%s" $a.name | quote }}
+              {{- end }}
+          resources:
+            requests: {cpu: 500m, memory: 256Mi}
+            limits: {memory: 512Mi}
+          securityContext:
+            {{- include "aiready.containerSecurityContext" $root | nindent 12 }}
+          volumeMounts:
+            - {name: model-store, mountPath: /model-store, readOnly: true}
+            {{- if $cache }}
+            - {name: models, mountPath: /models}
+            {{- end }}
+      containers:
+        - name: server
+          {{- if eq $m.engine "tei" }}
+          image: {{ include "aiready.image" (dict "root" $root "image" $ms.images.tei) }}
+          args:
+            - {{ printf "--model-id=%s" (ternary $modelDir (printf "/model-store/%s" .path) $cache) }}
+            - --hostname=0.0.0.0
+            - --port=8000
+            - --prometheus-port=9000
+            - --json-output
+            {{- range $m.args }}
+            - {{ . | quote }}
+            {{- end }}
+          {{- else }}
+          image: {{ include "aiready.image" (dict "root" $root "image" $ms.images.vllm) }}
+          command: [python3, -m, vllm.entrypoints.openai.api_server]
+          args:
+            - {{ printf "--model=%s" (ternary $modelDir (printf "/model-store/%s" .path) $cache) }}
+            - {{ printf "--served-model-name=%s" $m.name }}
+            - --host=0.0.0.0
+            - --port=8000
+            - --disable-log-requests
+            {{- if $m.gpus }}
+            - {{ printf "--tensor-parallel-size=%v" $m.gpus }}
+            {{- end }}
+            {{- if $m.adapters }}
+            # Stage 3: adapters tuned on the client's domain, loaded on the frozen base model.
+            - --enable-lora
+            - {{ printf "--max-loras=%d" (len $m.adapters) }}
+            - --lora-modules
+            {{- range $a := $m.adapters }}
+            - {{ printf "%s=%s" $a.name (ternary (printf "/models/adapters/%s" $a.name) (printf "/model-store/%s" $a.path) $cache) }}
+            {{- end }}
+            {{- end }}
+            {{- range $m.args }}
+            - {{ . | quote }}
+            {{- end }}
+          {{- end }}
+          env:
+            - {name: HOME, value: /tmp}
+            - {name: HF_HOME, value: /tmp/hf}
+            - {name: HUGGINGFACE_HUB_CACHE, value: /tmp/hf}
+            - {name: XDG_CACHE_HOME, value: /tmp/.cache}
+            - {name: TRITON_CACHE_DIR, value: /tmp/triton}
+            - {name: VLLM_CONFIG_ROOT, value: /tmp/vllm}
+            - {name: VLLM_CACHE_ROOT, value: /tmp/vllm-cache}
+            - {name: OUTLINES_CACHE_DIR, value: /tmp/outlines}
+            - {name: NUMBA_CACHE_DIR, value: /tmp/numba}
+            - {name: HF_HUB_OFFLINE, value: "1"}
+            - {name: TRANSFORMERS_OFFLINE, value: "1"}
+            - {name: VLLM_NO_USAGE_STATS, value: "1"}
+            - {name: DO_NOT_TRACK, value: "1"}
+            {{- range $k, $v := $m.env }}
+            - {name: {{ $k }}, value: {{ $v | quote }}}
+            {{- end }}
+          ports:
+            - {name: http, containerPort: 8000, protocol: TCP}
+            {{- if eq $m.engine "tei" }}
+            - {name: metrics, containerPort: 9000, protocol: TCP}
+            {{- end }}
+          startupProbe:
+            httpGet: {path: /health, port: http}
+            periodSeconds: 10
+            failureThreshold: 120   # up to 20 minutes to load large weights
+          readinessProbe:
+            httpGet: {path: /health, port: http}
+            periodSeconds: 10
+            failureThreshold: 3
+          livenessProbe:
+            httpGet: {path: /health, port: http}
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 4
+          resources:
+            requests:
+              {{- toYaml $m.resources.requests | nindent 14 }}
+              {{- if $m.gpus }}
+              nvidia.com/gpu: {{ $m.gpus }}
+              {{- end }}
+            limits:
+              {{- with $m.resources.limits }}
+              {{- toYaml . | nindent 14 }}
+              {{- end }}
+              {{- if $m.gpus }}
+              nvidia.com/gpu: {{ $m.gpus }}
+              {{- end }}
+          securityContext:
+            {{- include "aiready.containerSecurityContext" $root | nindent 12 }}
+          volumeMounts:
+            - {name: model-store, mountPath: /model-store, readOnly: true}
+            {{- if $cache }}
+            - {name: models, mountPath: /models, readOnly: true}
+            {{- end }}
+            - {name: tmp, mountPath: /tmp}
+            - {name: dshm, mountPath: /dev/shm}
+      volumes:
+        - name: model-store
+          persistentVolumeClaim:
+            claimName: {{ $ms.modelStore.existingClaim }}
+            readOnly: true
+        {{- if $cache }}
+        - name: models
+          emptyDir:
+            sizeLimit: {{ $ms.modelStore.localCache.sizeLimit }}
+        {{- end }}
+        - name: tmp
+          emptyDir: {sizeLimit: 20Gi}
+        - name: dshm
+          emptyDir: {medium: Memory, sizeLimit: 16Gi}
+{{- end }}

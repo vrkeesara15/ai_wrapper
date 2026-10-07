@@ -1,0 +1,103 @@
+# Observability service (aiready.observability) - traces, cost, live scores, review queue, alerts.
+# Port 8170, wiring name "observability". Every key is optional; the values below are the defaults.
+observability:
+  # Trace store. type: sql (SQLite for the pilot, PostgreSQL in production) | memory, or
+  # class: your_pkg.module:YourStore (ClickHouse, Elasticsearch...). url defaults to state.url.
+  store:
+    type: sql
+    url: null                  # e.g. postgresql+psycopg://aiready:${secret:db_password}@db/aiready
+    retention_days: 90         # spans older than this are purged
+
+  # Personal data is masked before anything is stored (spans, feedback, review items).
+  masking:
+    use_guardrails: true       # use connect("guardrails").mask when deployed; the regex masker always runs too
+    extra_patterns: {}         # ENTITY: regex, e.g. POLICY_NO: "\\bPOL-\\d{8}\\b"
+    disabled_entities: []      # e.g. [IP_ADDRESS]
+
+  ingest:
+    # POST /v1/spans needs a service token (X-Service-Token). The core span exporter
+    # (AIREADY_TRACE_COLLECTOR_URL) posts without one: either give it a token or, only behind a network
+    # policy that admits nothing but the platform's pods, set allow_anonymous: true.
+    allow_anonymous: false
+    max_batch: 5000
+    capture_local: false       # single-process pilot: also store this process's own spans
+    flush_interval_seconds: 2
+
+  # Latency budget (ms) from the "Latency budget and response modes" slide. Design targets to confirm in
+  # load testing on the client's hardware - not measurements.
+  latency_budget_ms:
+    screen: 50
+    embed: 30
+    search: 70
+    rerank: 150
+    model_start: 500
+    first_token: 800
+    check: 500
+
+  # Span-name globs per budget stage (first match wins). first_token / model_start come from the
+  # ttft_ms / model_start_ms span attributes.
+  stage_map:
+    screen: ["guardrails.screen*", "*.screen_input", "*.screen"]
+    embed: ["embedding.*", "*.embed", "*.embed_query"]
+    search: ["search.search", "search.hybrid", "*.search", "*.hybrid_search"]
+    rerank: ["rerank.*", "*.rerank"]
+    check: ["*.verify", "*.grounding*", "guardrails.validate*", "*.check"]
+
+  # Cost: spans carrying `cost` win; otherwise priced here (per 1k tokens, plus a fixed per-request part).
+  # Price self-hosted models at an internal rate so chargeback covers them too. "*" = any other model.
+  currency: EUR
+  pricing: {}
+  #  chat-large: {input_per_1k: 0.002, output_per_1k: 0.006}
+  #  "*": {input_per_1k: 0.0005, output_per_1k: 0.0015}
+
+  # Team that pays, when spans carry no `team`: keys "app", "app/feature" or "*/feature".
+  teams: {}
+  #  claims: claims-operations
+  #  claims/fraud-triage: special-investigations
+
+  # Monthly budgets used by chargeback (budget_used) and spend alerts: "team:<t>", "feature:<f>", "app:<a>".
+  budgets: {}
+  #  team:claims-operations: 2000
+
+  # Live scorers: a share of production answers is scored; low scores go to the review queue.
+  scoring:
+    enabled: true
+    sample_rate: 0.1           # deterministic per trace id
+    low_score_threshold: 0.6
+    scorers:                   # plugin kind "scorer" (aiready.evals.scorers) or class: pkg.mod:Scorer
+      - {type: grounding}
+      - {type: citation_validity}
+      - {type: refusal}
+      - {type: pii_leak}
+    llm_judge: {enabled: false, route: judge}   # model-graded score via the gateway route "judge"
+    answer_span_names: ["rag.answer", "*.answer", "agents.run", "assistant.*"]
+
+  review:
+    causes: [retrieval, prompt, model, data, policy]
+    negative_rating_threshold: 2   # ratings 1..5 at or below this are negative
+
+  # Alert rules, evaluated every interval_seconds. kind: quality | latency | spend | error_rate | pipeline_lag.
+  # threshold defaults: quality 0.7, latency = the stage budget, spend = the matching budget,
+  # error_rate 0.05, pipeline_lag 3600 s. scope filters on app / feature / team / model (+ stage, scorer).
+  alerts:
+    enabled: true
+    interval_seconds: 60
+    rules:
+      - {name: quality-low, kind: quality, window_minutes: 1440, min_samples: 20}
+      - {name: first-token-over-budget, kind: latency, scope: {stage: first_token}, window_minutes: 15, min_samples: 20}
+      - {name: error-rate-high, kind: error_rate, window_minutes: 15, min_samples: 20, severity: critical}
+      - {name: ingestion-lag, kind: pipeline_lag, window_minutes: 60}
+    # Notifiers (plugin kind "notifier"): log | webhook {url} | slack {webhook_url} |
+    # email {host, port, to, sender, username, password: ${secret:smtp_password}, starttls}
+    notifiers:
+      log: {type: log}
+      # slack: {type: slack, webhook_url: "${secret:slack_webhook}"}
+      # oncall: {type: webhook, url: "https://alerts.internal/hooks/aiready"}
+
+  # Users always see their own traces. These roles see all traces of their tenant / may replay / work the
+  # review queue / see cost, latency and quality reports.
+  access:
+    viewer_roles: [admin, ops, auditor]
+    replay_roles: [admin]
+    reviewer_roles: [admin, reviewer, ai-engineer]
+    report_roles: [admin, ops, finance]

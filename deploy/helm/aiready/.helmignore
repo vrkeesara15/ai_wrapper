@@ -1,0 +1,8 @@
+.DS_Store
+.git/
+*.swp
+*.bak
+*.tmp
+*.orig
+# Config subtrees that never belong in the ConfigMap (tests and eval fixtures ship in the image).
+tests/

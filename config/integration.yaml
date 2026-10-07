@@ -1,0 +1,259 @@
+# =====================================================================================================
+# Legacy integration layer (package aiready.integration)
+#
+# The per-client adapters that connect AI-Ready to an existing application WITHOUT modifying it:
+#   identity_bridge  - app session -> short-lived signed AI-Ready token          (port 8150)
+#   facade           - clean declared endpoints over existing functions -> tools (port 8151)
+#   change_capture   - replica reader / change events -> ingestion work queue
+# The defaults below target the sample app in examples/legacy_app (run it on http://localhost:8000).
+# =====================================================================================================
+integration:
+
+  # ---------------------------------------------------------------------------------------------------
+  # Identity bridge: trusts the existing login instead of replacing it.
+  # ---------------------------------------------------------------------------------------------------
+  identity_bridge:
+    app: claims                  # "app" claim of issued tokens (scopes caches, budgets, audit)
+    default_tenant: default      # used when the session does not say which tenant the user belongs to
+    token_ttl_seconds: 900       # keep tokens short-lived; clients refresh through /v1/token/refresh
+    refresh_grace_seconds: 300   # an expired token can still be refreshed for this long (session re-checked)
+    # Store the original app session in the token (claim below) so the API facade can forward it to the
+    # app and the app enforces its own rules for this user. The token is signed, not encrypted: keep the
+    # TTL short and set this to false if the facade forwards identity by header instead.
+    embed_app_session: true
+    app_session_claim: app_session
+    policy_check: true           # ask the policy engine (action identity.token_issue) before issuing
+
+    # Session validators, tried in order (or pick one with {"validator": "<name>"} in the request).
+    # Built-in types: introspect_http | oidc | shared_session_store | header_trust
+    # Custom: {class: my_pkg.module:MyValidator, ...} with `name` and `async validate(creds)`.
+    validators:
+      - type: introspect_http
+        name: legacy-session
+        url: ${LEGACY_APP_URL:-http://localhost:8000}/api/me   # the app's own "who am I" endpoint
+        method: GET
+        session_cookie: LEGACYSESSID       # cookie forwarded to the app (and kept as app_session)
+        forward_cookies: []                # other cookies the endpoint needs
+        forward_headers: []                # e.g. [Authorization] for token-based apps
+        cache_ttl: 30                      # seconds a positive answer is reused (keyed by credential hash)
+        timeout: 5
+        # Mapping of the JSON answer (JSONPath subset: $.a.b, list[*], list[0]).
+        mappings:
+          sub: $.user.login
+          email: $.user.email
+          name: $.user.display_name
+          tenant: $.company
+          roles: $.roles                   # the app's roles; mapped by role_mapping below
+          attributes:                      # extra attributes usable in rules / attribute_groups
+            region: $.region
+            department: $.department
+      # Example: token exchange with the client's IdP (enable when SSO exists)
+      # - type: oidc
+      #   name: corporate-sso
+      #   issuer: https://login.example.com/realms/acme
+      #   jwks_url: https://login.example.com/realms/acme/protocol/openid-connect/certs
+      #   audience: aiready
+      #   mappings: {sub: $.preferred_username, email: $.email, roles: $.realm_access.roles, groups: $.groups}
+      # Example: app keeps sessions in Redis / a table and has no "who am I" endpoint
+      # - type: shared_session_store
+      #   url: redis://sessions:6379/0
+      #   cookie_name: JSESSIONID
+      #   key_template: "spring:session:{id}"
+      #   mappings: {sub: $.username, roles: $.authorities[*]}
+      # Example: behind an authenticating reverse proxy - headers trusted only from these networks
+      # - type: header_trust
+      #   trusted_cidrs: [10.0.0.0/8]
+      #   user_header: X-Remote-User
+      #   roles_header: X-Remote-Roles
+      #   groups_header: X-Remote-Groups
+
+    # From what the app says to AI-Ready roles and groups (groups become access tags at retrieval).
+    role_mapping:
+      default_roles: [user]
+      default_groups: []
+      keep_unmapped_roles: false   # false: app roles without a rule give no AI-Ready rights
+      unmapped_prefix: "app:"
+      rules:
+        - app_role: adjuster
+          roles: [claims-user]
+          groups: [claims-team]
+        - app_role: fraud_investigator
+          roles: [claims-user, fraud-investigator]
+          groups: [claims-team, fraud]
+        - app_role: customer_service
+          roles: [service-agent]
+          groups: [service-team]
+        - app_role: administrator
+          roles: [ingestion-admin, facade-admin]
+          groups: [it]
+      attribute_groups:            # attribute value -> group, e.g. region north -> region:north
+        - attribute: region
+          template: "region:{value}"
+
+  # ---------------------------------------------------------------------------------------------------
+  # API facade: each endpoint is one MCP tool (OpenAPI at /openapi.json).
+  # ---------------------------------------------------------------------------------------------------
+  facade:
+    title: Claims application facade
+    base_url: ${LEGACY_APP_URL:-http://localhost:8000}
+    replica_url: ${LEGACY_REPLICA_URL:-sqlite:///examples/legacy_app/data/legacy.db}  # for sql upstreams
+    timeout_seconds: 30
+    # Identity forwarding: session_cookie (original cookie from the token claim) | header | bearer | none
+    forward:
+      mode: session_cookie
+      cookie_name: LEGACYSESSID
+      claim: app_session
+      # mode: header
+      # header: X-Remote-User
+      # value_template: "{sub}"
+    # Non-read endpoints are refused (403 approval_required) without this header, which the MCP executor
+    # sets after a person approved the action.
+    require_approval_header_for_writes: true
+    approval_header: X-AIReady-Approval
+
+    # Each endpoint: name, description, method/path (facade route; default GET|POST /v1/<name>),
+    # input_schema (JSON Schema), upstream (http | sql | stored_procedure), output (root + field mapping),
+    # effect (read | write | payment | delete), required_roles, data_class.
+    endpoints:
+      - name: list_claims
+        description: List the claims the user may see, optionally filtered by status.
+        input_schema:
+          type: object
+          properties:
+            status: {type: string, enum: [open, under_review, approved, rejected, closed]}
+            page: {type: integer, minimum: 1}
+        upstream: {type: http, method: GET, path: /api/claims, query: {status: "{status}", page: "{page}"}}
+        output:
+          root: $.items
+          fields: {claim_number: claim_number, status: status, amount: amount, claimant: claimant, region: region}
+        effect: read
+        required_roles: [claims-user, service-agent]
+        data_class: personal
+
+      - name: get_claim
+        description: Get one claim with its notes.
+        input_schema:
+          type: object
+          required: [claim_number]
+          properties: {claim_number: {type: string, pattern: "^CLM-[0-9]+$"}}
+        upstream: {type: http, method: GET, path: "/api/claims/{claim_number}"}
+        output:
+          fields: {claim_number: claim_number, status: status, amount: amount, description: description,
+                   claimant: claimant, notes: "notes[*].text"}
+        effect: read
+        required_roles: [claims-user, service-agent]
+        data_class: personal
+
+      - name: add_claim_note
+        description: Add a note to a claim (write - needs approval).
+        method: POST
+        path: "/v1/claims/{claim_number}/notes"
+        input_schema:
+          type: object
+          required: [claim_number, text]
+          properties:
+            claim_number: {type: string, pattern: "^CLM-[0-9]+$"}
+            text: {type: string, minLength: 1, maxLength: 2000}
+        upstream: {type: http, method: POST, path: "/api/claims/{claim_number}/notes", body: {text: "{text}"}}
+        effect: write
+        required_roles: [claims-user]
+        data_class: personal
+
+      - name: set_claim_status
+        description: Change the status of a claim (write - needs approval).
+        input_schema:
+          type: object
+          required: [claim_number, status]
+          properties:
+            claim_number: {type: string, pattern: "^CLM-[0-9]+$"}
+            status: {type: string, enum: [open, under_review, approved, rejected, closed]}
+        upstream: {type: http, method: PUT, path: "/api/claims/{claim_number}/status", body: {status: "{status}"}}
+        effect: write
+        required_roles: [claims-user]
+        data_class: personal
+
+      - name: get_policy
+        description: Get an insurance policy by number.
+        input_schema:
+          type: object
+          required: [number]
+          properties: {number: {type: string, pattern: "^POL-[0-9]+$"}}
+        upstream: {type: http, method: GET, path: "/api/policies/{number}"}
+        output: {fields: {number: number, holder: holder_name, product: product, status: status, premium: premium}}
+        effect: read
+        required_roles: [claims-user, service-agent]
+        data_class: personal
+
+      - name: claims_summary_sql
+        description: Number of claims and total amount per status (read-only query on the replica).
+        input_schema: {type: object, properties: {}}
+        upstream:
+          type: sql
+          query: "SELECT status, COUNT(*) AS claims, SUM(amount) AS total_amount FROM claims GROUP BY status ORDER BY status"
+          max_rows: 100
+        effect: read
+        required_roles: [claims-user]
+        data_class: internal
+
+  # ---------------------------------------------------------------------------------------------------
+  # Change capture: rows and changes -> ingestion work queue (one message per document).
+  # ---------------------------------------------------------------------------------------------------
+  change_capture:
+    type: polling                # polling | outbox | debezium | class: my_pkg.module:Reader
+    source: legacy-db            # source name in the document registry, lineage and metrics
+    # REQUIRED: the read replica. Never the live primary - the reader refuses to start without it, and
+    # refuses when it equals primary_url.
+    replica_url: ${LEGACY_REPLICA_URL:-sqlite:///examples/legacy_app/data/legacy.db}
+    primary_url: ${LEGACY_PRIMARY_URL:-}
+    interval_seconds: 60
+    batch_size: 1000
+    policy_check: true           # action data.read as svc:change-capture before each run
+    queue: {type: memory}        # must be the same queue the ingestion workers read (redis in production)
+    tombstone:                   # delete detection: table filled by triggers on delete
+      table: deleted_records
+      id_column: id
+      table_column: table_name
+      key_column: record_id
+    outbox:                      # used by type: outbox
+      table: outbox
+      id_column: id
+      aggregate_column: aggregate
+      aggregate_id_column: aggregate_id
+      event_type_column: event_type
+      delete_event_types: [deleted]
+      aggregate_tables: {claim: claims, policy: policies}
+    kafka:                       # used by type: debezium
+      bootstrap_servers: ${KAFKA_BOOTSTRAP:-localhost:9092}
+      topics: [legacy.public.claims, legacy.public.policies]
+      group_id: aiready-change-capture
+    # Tables captured; each row becomes one document (see aiready.ingestion.documents.RowMapping).
+    tables:
+      - table: claims
+        key_columns: [id]
+        watermark_column: updated_at
+        delete_detection: tombstone      # tombstone | key_diff | none
+        title_template: "Claim {claim_number}"
+        content_template: "Claim {claim_number} ({status}) for {claimant}, amount {amount} EUR, region {region}: {description}"
+        owner_column: handler
+        uri_template: "legacy://claims/{claim_number}"
+        # Row-level visibility mirrors the app: adjusters see the claims of their region, fraud
+        # investigators see every claim. Search matches ANY tag, so do not add a broad static tag such as
+        # claims-team here - it would make every claim visible to every adjuster.
+        access_tags: [fraud]             # static tags
+        access_tag_columns:
+          - {column: region, template: "region:{value}"}
+        access_rules:                    # conditional tags, e.g. closed claims also visible to service staff
+          - when: {status: closed}
+            tags: [service-team]
+        data_class: personal
+      - table: policies
+        key_columns: [id]
+        watermark_column: updated_at
+        delete_detection: tombstone
+        title_template: "Policy {number}"
+        content_template: "Policy {number}: {product} insurance for {holder_name}, premium {premium} EUR, status {status}."
+        uri_template: "legacy://policies/{number}"
+        access_tags: [claims-team, service-team]
+        access_tag_columns:
+          - {column: region, template: "region:{value}"}
+        data_class: personal

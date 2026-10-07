@@ -1,0 +1,169 @@
+# AI-Ready alert rules ("Alerts: quality, latency, spend"). Mounted by compose and embedded in the Helm
+# chart's PrometheusRule (the chart reads this file with .Files.Get, so there is one source of truth).
+# Thresholds follow the "Latency budget and response modes" design targets; confirm them in load testing.
+groups:
+  - name: aiready.latency
+    rules:
+      - record: aiready:request_latency_seconds:p95
+        expr: histogram_quantile(0.95, sum by (service, le) (rate(aiready_request_latency_seconds_bucket[5m])))
+      - record: aiready:ttft_seconds:p95
+        expr: histogram_quantile(0.95, sum by (service, model, le) (rate(aiready_time_to_first_token_seconds_bucket[5m])))
+      - record: aiready:stage_latency_seconds:p95
+        expr: histogram_quantile(0.95, sum by (service, stage, le) (rate(aiready_stage_latency_seconds_bucket[5m])))
+      - alert: AIReadyTimeToFirstTokenOverBudget
+        expr: aiready:ttft_seconds:p95 > 0.8
+        for: 10m
+        labels: {severity: warning, team: platform}
+        annotations:
+          summary: "p95 time to first token {{ $value | humanizeDuration }} on {{ $labels.service }}/{{ $labels.model }} (budget 800 ms)"
+          runbook: docs/runbooks/model-rollout-rollback.md
+      - alert: AIReadyStageOverBudget
+        # Per-stage budgets: screen 50 ms, embed 30 ms, hybrid search 70 ms, rerank 150 ms.
+        expr: |
+          (aiready:stage_latency_seconds:p95{stage=~"screen_input|guard_input"} > 0.05)
+          or (aiready:stage_latency_seconds:p95{stage=~"embed_query|embed"} > 0.03)
+          or (aiready:stage_latency_seconds:p95{stage=~"hybrid_search|search"} > 0.07)
+          or (aiready:stage_latency_seconds:p95{stage="rerank"} > 0.15)
+        for: 15m
+        labels: {severity: warning, team: platform}
+        annotations:
+          summary: "{{ $labels.service }} stage {{ $labels.stage }} p95 {{ $value | humanizeDuration }} is over its latency budget"
+      - alert: AIReadyGatewayLatencyHigh
+        expr: aiready:request_latency_seconds:p95{service="gateway"} > 4
+        for: 10m
+        labels: {severity: critical, team: platform}
+        annotations:
+          summary: "Gateway p95 latency {{ $value | humanizeDuration }}"
+
+  - name: aiready.errors
+    rules:
+      - record: aiready:error_ratio:rate5m
+        expr: |
+          sum by (service) (rate(aiready_requests_total{status=~"5.."}[5m]))
+          / clamp_min(sum by (service) (rate(aiready_requests_total[5m])), 1e-9)
+      - alert: AIReadyErrorRateHigh
+        expr: aiready:error_ratio:rate5m > 0.02
+        for: 10m
+        labels: {severity: critical, team: platform}
+        annotations:
+          summary: "{{ $labels.service }} 5xx ratio {{ $value | humanizePercentage }}"
+          runbook: docs/runbooks/incident-response.md
+      - alert: AIReadyServiceDown
+        expr: up{job="aiready"} == 0   # compose job name; the chart sets jobLabel so k8s matches too
+        for: 3m
+        labels: {severity: critical, team: platform}
+        annotations:
+          summary: "{{ $labels.instance }} is not being scraped"
+      - alert: AIReadyPolicyDenialSpike
+        expr: sum by (service, action) (rate(aiready_policy_decisions_total{decision="deny"}[10m])) > 1
+        for: 10m
+        labels: {severity: warning, team: security}
+        annotations:
+          summary: "Policy denials for {{ $labels.action }} at {{ $value }}/s - misuse or a broken rule"
+      - alert: AIReadyGuardrailBlocksSpike
+        expr: sum by (check) (rate(aiready_guardrail_total{outcome=~"block|blocked"}[10m])) > 0.5
+        for: 10m
+        labels: {severity: warning, team: security}
+        annotations:
+          summary: "Guardrail {{ $labels.check }} blocking {{ $value }}/s - possible injection campaign"
+          runbook: docs/runbooks/incident-response.md
+      - alert: AIReadyFallbacksHigh
+        expr: sum by (service, kind) (rate(aiready_fallbacks_total[10m])) > 0.2
+        for: 15m
+        labels: {severity: warning, team: platform}
+        annotations:
+          summary: "{{ $labels.service }} falling back ({{ $labels.kind }}) at {{ $value }}/s"
+
+  - name: aiready.spend
+    rules:
+      - record: aiready:cost:rate1h
+        expr: sum by (team, app, model) (increase(aiready_cost_total[1h]))
+      - alert: AIReadySpendSpike
+        # Hourly spend per team more than 3x its own 7-day hourly average.
+        expr: |
+          aiready:cost:rate1h
+          > 3 * avg_over_time(aiready:cost:rate1h[7d]) and aiready:cost:rate1h > 1
+        for: 30m
+        labels: {severity: warning, team: finops}
+        annotations:
+          summary: "Spend for team {{ $labels.team }} / {{ $labels.app }} on {{ $labels.model }} is 3x its weekly norm"
+      - alert: AIReadyTokenRateSpike
+        expr: sum by (team) (rate(aiready_tokens_total[15m])) > 5 * sum by (team) (rate(aiready_tokens_total[1d] offset 1d))
+        for: 30m
+        labels: {severity: warning, team: finops}
+        annotations:
+          summary: "Token rate for team {{ $labels.team }} is 5x yesterday's average"
+
+  - name: aiready.quality
+    rules:
+      - alert: AIReadyQualityScoreDrop
+        expr: avg by (app, feature, scorer) (aiready_quality_score) < 0.7
+        for: 1h
+        labels: {severity: warning, team: ai}
+        annotations:
+          summary: "Live {{ $labels.scorer }} score for {{ $labels.app }}/{{ $labels.feature }} is {{ $value }}"
+          runbook: docs/runbooks/model-rollout-rollback.md
+
+  - name: aiready.queues
+    rules:
+      - alert: AIReadyQueueBacklog
+        expr: max by (service, queue) (aiready_queue_depth{queue!~".*:dlq"}) > 500
+        for: 15m
+        labels: {severity: warning, team: platform}
+        annotations:
+          summary: "Queue {{ $labels.queue }} on {{ $labels.service }} has {{ $value }} items waiting"
+      - alert: AIReadyQueueNotDraining
+        expr: deriv(max by (service, queue) (aiready_queue_depth{queue!~".*:dlq"})[30m:1m]) > 0 and max by (service, queue) (aiready_queue_depth) > 100
+        for: 30m
+        labels: {severity: warning, team: platform}
+        annotations:
+          summary: "Queue {{ $labels.queue }} has grown for 30 minutes - autoscaler at its ceiling?"
+      - alert: AIReadyDeadLetters
+        expr: max by (service, queue) (aiready_queue_depth{queue=~".*:dlq|.*dlq"}) > 0
+        for: 5m
+        labels: {severity: warning, team: data}
+        annotations:
+          summary: "{{ $value }} messages in dead-letter queue {{ $labels.queue }}"
+          runbook: docs/runbooks/dlq-replay.md
+
+  - name: aiready.gpu
+    rules:
+      - alert: AIReadyGPUMemoryHigh
+        expr: |
+          max by (Hostname, gpu) (DCGM_FI_DEV_FB_USED / (DCGM_FI_DEV_FB_USED + DCGM_FI_DEV_FB_FREE)) > 0.95
+        for: 15m
+        labels: {severity: warning, team: platform}
+        annotations:
+          summary: "GPU {{ $labels.gpu }} on {{ $labels.Hostname }} framebuffer {{ $value | humanizePercentage }} used"
+          runbook: docs/runbooks/add-gpu-node.md
+      - alert: AIReadyKVCacheSaturated
+        expr: max by (model_name, pod) (vllm:gpu_cache_usage_perc) > 0.95
+        for: 10m
+        labels: {severity: warning, team: platform}
+        annotations:
+          summary: "vLLM KV cache {{ $value | humanizePercentage }} full on {{ $labels.pod }} - requests are queuing"
+      - alert: AIReadyModelQueueTime
+        expr: |
+          histogram_quantile(0.95, sum by (model_name, le) (rate(vllm:e2e_request_latency_seconds_bucket[5m])))
+          - histogram_quantile(0.95, sum by (model_name, le) (rate(vllm:request_inference_time_seconds_bucket[5m]))) > 1
+        for: 10m
+        labels: {severity: warning, team: platform}
+        annotations:
+          summary: "Requests to {{ $labels.model_name }} wait over 1 s in queue (p95) - add capacity"
+          runbook: docs/runbooks/add-gpu-node.md
+      - alert: AIReadyRequestsWaiting
+        expr: sum by (model_name) (vllm:num_requests_waiting) > 20
+        for: 10m
+        labels: {severity: warning, team: platform}
+        annotations:
+          summary: "{{ $value }} requests waiting on {{ $labels.model_name }}"
+
+  - name: aiready.governance
+    rules:
+      - alert: AIReadyAuditVerificationFailed
+        expr: kube_job_status_failed{job_name=~".*audit-verify.*"} > 0
+        for: 1m
+        labels: {severity: critical, team: security}
+        annotations:
+          summary: "Audit chain verification job {{ $labels.job_name }} failed - possible tampering"
+          runbook: docs/runbooks/audit-chain-verification.md

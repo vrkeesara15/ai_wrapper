@@ -1,0 +1,96 @@
+{{- /* Egress proxy: the only pod with a route to the internet (NetworkPolicy zone "egress"). Default deny. */ -}}
+{{- if .Values.egressProxy.enabled }}
+{{- $e := .Values.egressProxy }}
+{{- $sel := include "aiready.selectorLabels" (dict "root" . "name" "egress-proxy") | fromYaml }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: egress-proxy
+  labels:
+    {{- include "aiready.labels" (dict "root" . "name" "egress-proxy" "zone" "egress") | nindent 4 }}
+data:
+  squid.conf: |-
+{{ .Files.Get "files/security/squid.conf" | indent 4 }}
+  allowlist.txt: |-
+    # Rendered from egressProxy.allowlist - every entry needs a matching governance policy entry.
+    deny-all.invalid
+    {{- range $e.allowlist }}
+    {{ . }}
+    {{- end }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: egress-proxy
+  labels:
+    {{- include "aiready.labels" (dict "root" . "name" "egress-proxy" "zone" "egress") | nindent 4 }}
+spec:
+  replicas: {{ $e.replicas }}
+  selector:
+    matchLabels:
+      {{- toYaml $sel | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "aiready.labels" (dict "root" . "name" "egress-proxy" "zone" "egress") | nindent 8 }}
+      annotations:
+        checksum/config: {{ printf "%s%v" (.Files.Get "files/security/squid.conf") $e.allowlist | sha256sum }}
+    spec:
+      serviceAccountName: egress-proxy
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      {{- include "aiready.imagePullSecrets" . | nindent 6 }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 13          # "proxy" user in the squid image
+        runAsGroup: 13
+        fsGroup: 13
+        seccompProfile: {type: RuntimeDefault}
+      {{- with $e.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $e.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: squid
+          image: {{ include "aiready.image" (dict "root" . "image" $e.image) }}
+          command: [squid, -N, -f, /etc/squid/squid.conf]
+          ports:
+            - {name: proxy, containerPort: 3128, protocol: TCP}
+          readinessProbe:
+            tcpSocket: {port: proxy}
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket: {port: proxy}
+            periodSeconds: 20
+          resources:
+            {{- toYaml $e.resources | nindent 12 }}
+          securityContext:
+            {{- include "aiready.containerSecurityContext" . | nindent 12 }}
+          volumeMounts:
+            - {name: config, mountPath: /etc/squid, readOnly: true}
+            - {name: run, mountPath: /run/squid}
+            - {name: spool, mountPath: /var/spool/squid}
+            - {name: logs, mountPath: /var/log/squid}
+      volumes:
+        - name: config
+          configMap: {name: egress-proxy}
+        - {name: run, emptyDir: {}}
+        - {name: spool, emptyDir: {sizeLimit: 1Gi}}
+        - {name: logs, emptyDir: {sizeLimit: 1Gi}}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: egress-proxy
+  labels:
+    {{- include "aiready.labels" (dict "root" . "name" "egress-proxy" "zone" "egress") | nindent 4 }}
+spec:
+  selector:
+    {{- toYaml $sel | nindent 4 }}
+  ports:
+    - {name: proxy, port: 3128, targetPort: proxy, protocol: TCP}
+{{- end }}

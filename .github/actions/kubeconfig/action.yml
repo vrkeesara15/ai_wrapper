@@ -1,0 +1,21 @@
+# Writes the cluster credentials for a deploy job. Prefer short-lived credentials: replace the body with
+# aws-actions/configure-aws-credentials (OIDC role) + `aws eks update-kubeconfig` for the cloud topology.
+# On-prem clusters are not reachable from GitHub: deployments there import a signed bundle instead
+# (deploy/onprem/README.md).
+name: kubeconfig
+description: Configure kubectl/helm access to the target cluster
+inputs:
+  kubeconfig:
+    description: Base64-encoded kubeconfig (environment secret)
+    required: true
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        KUBECONFIG_B64: ${{ inputs.kubeconfig }}
+      run: |
+        mkdir -p "$HOME/.kube"
+        printf '%s' "$KUBECONFIG_B64" | base64 -d > "$HOME/.kube/config"
+        chmod 600 "$HOME/.kube/config"
+        kubectl version --client=true > /dev/null

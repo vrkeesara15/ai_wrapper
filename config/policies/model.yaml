@@ -1,0 +1,85 @@
+# Policy domain: model - who may use which model on which data ("LLM categories: private and public").
+# The default route is private. A public route needs an egress entry naming the data classes allowed to
+# leave (security.egress.destinations) and only ever carries PUBLIC or INTERNAL data.
+policies:
+  model:
+    version: 1.0.0
+    description: Model access by boundary, registry status and data class.
+    rules:
+      # ---------------------------------------------------------------- registry
+      - id: model.registry.not_approved
+        description: Only models approved in the model registry may be invoked.
+        action: "model.*"
+        effect: deny
+        when:
+          resource.registry_status: {exists: true, ne: approved}
+
+      - id: model.registry.disabled
+        description: The model was closed by an incident action.
+        action: "model.*"
+        effect: deny
+        when:
+          resource.disabled: true
+
+      - id: model.registry.data_class
+        description: The registry does not allow this data class on this model.
+        action: "model.*"
+        effect: deny
+        when:
+          context.model_allows_data_class: false
+
+      # ---------------------------------------------------------------- private models
+      - id: model.private.authenticated
+        description: Private models (inside the client's boundary) are open to signed-in users and relaying services.
+        action: [model.invoke, model.embed, model.rerank]
+        effect: allow
+        when:
+          principal.authenticated: true
+          resource.boundary: {ne: public}
+
+      # ---------------------------------------------------------------- public models
+      - id: model.public.data_class
+        description: A public model only receives PUBLIC or INTERNAL data.
+        action: "model.*"
+        effect: deny
+        when:
+          resource.boundary: public
+          context.data_class: {not_in: [public, internal]}
+
+      - id: model.public.egress_closed
+        description: Egress to this public model is not opened for this data class.
+        action: "model.*"
+        effect: deny
+        when:
+          resource.boundary: public
+          context.egress_allowed: {ne: true}
+
+      - id: model.public.allowed
+        description: Public model through an opened egress route.
+        action: [model.invoke, model.embed, model.rerank]
+        effect: allow
+        when:
+          principal.authenticated: true
+          resource.boundary: public
+          context.egress_allowed: true
+        obligations:
+          mask_pii: true            # mask personal data before the prompt leaves the boundary
+          log_full_prompt: false
+
+      # ---------------------------------------------------------------- obligations
+      - id: model.obligations.default
+        description: Default generation ceiling for every model call.
+        action: model.invoke
+        effect: obligate
+        obligations:
+          max_tokens: 4096
+
+      - id: model.obligations.personal
+        description: Prompts carrying personal or restricted data are not logged in full.
+        action: "model.*"
+        effect: obligate
+        when:
+          context.data_class: [personal, restricted]
+        obligations:
+          log_full_prompt: false
+          no_cache: true

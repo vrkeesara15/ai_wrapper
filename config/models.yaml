@@ -1,0 +1,166 @@
+# =============================================================================
+# Model serving layer: pools of model servers and the logical model catalog.
+#
+#   pools    - named groups of identical replicas serving one model. The inference router sends each
+#              request to the least-loaded healthy replica and ejects failing ones for a cooldown.
+#   catalog  - logical models the gateway routes to (what routes, budgets and policies refer to). Each
+#              entry is a row of the model registry: tier, category, allowed data classes, context
+#              length, licence, cost, capabilities.
+#
+# The defaults below use the offline `mock` backend so everything runs with no GPU and no network.
+# Replace a pool's replicas with real servers - the catalog, routes and applications do not change.
+# Changes apply without a restart (file watcher, or the admin API on port 8081).
+# =============================================================================
+
+models:
+  pools:
+    # --- Small open-weight model: routing, classification, extraction. One shared GPU. -----------------
+    small-llm:
+      model: mock-small                       # upstream model id sent to the server
+      replicas:
+        - {type: mock, latency_ms: 0}
+      # replicas:                             # production example: vLLM on a shared GPU
+      #   - type: openai
+      #     base_url: http://vllm-small-0:8000/v1
+      #     api_key: ${secret:vllm_api_key}
+      #     timeout: 30
+      # model: Qwen/Qwen2.5-7B-Instruct
+      eject_after_failures: 3                 # circuit breaker: consecutive failures before ejection
+      cooldown_seconds: 30                    # ejected replica rests this long, then gets one trial request
+      max_in_flight_per_replica: 0            # 0 = unlimited; above it requests queue (queue depth -> autoscaler)
+
+    # --- Mid-size open-weight model: most chat, search answers and tool calls. Client GPUs. -------------
+    mid-llm:
+      model: mock-mid
+      replicas:
+        - {type: mock}
+      # model: Qwen/Qwen2.5-32B-Instruct
+      # replicas:
+      #   - {type: openai, base_url: "http://vllm-mid-0:8000/v1", api_key: "${secret:vllm_api_key}"}
+      #   - {type: openai, base_url: "http://vllm-mid-1:8000/v1", api_key: "${secret:vllm_api_key}"}
+      # max_in_flight_per_replica: 64
+
+    # --- Large model: long multi-step agent tasks and hard reasoning. GPU cluster. ----------------------
+    large-llm:
+      model: mock-large
+      replicas:
+        - {type: mock}
+      # model: meta-llama/Llama-3.3-70B-Instruct
+      # replicas:
+      #   - {type: openai, base_url: "http://vllm-large:8000/v1", timeout: 180}
+
+    # --- Embedding and reranker models: semantic search. Same GPUs, small footprint. --------------------
+    embedding:
+      model: mock-embedding
+      replicas:
+        - {type: mock, dim: 384}
+      # model: BAAI/bge-m3
+      # replicas:
+      #   - {type: openai, base_url: "http://tei-embed:8080/v1"}      # TEI / vLLM / Infinity
+    reranker:
+      model: mock-reranker
+      replicas:
+        - {type: mock}
+      # model: BAAI/bge-reranker-v2-m3
+      # replicas:
+      #   - {type: openai, base_url: "http://tei-rerank:8080/v1", rerank_style: tei}   # or cohere-style /v1/rerank
+
+    # --- Private enterprise endpoint: a vendor model served inside the client's own cloud tenancy. ------
+    # private-endpoint:
+    #   model: enterprise-large
+    #   replicas:
+    #     - type: openai
+    #       base_url: https://llm.private.client-cloud.example/v1
+    #       api_key: ${secret:private_endpoint_key}
+    #       headers: {X-Tenant: client}
+    #       timeout: 180
+
+    # --- Public API (escalation). Prompts leave the client's boundary: closed by default. ---------------
+    # public-escalation:
+    #   model: <vendor-model-id>
+    #   replicas:
+    #     - type: anthropic                    # Messages API, mapped to the OpenAI shape (tools included)
+    #       api_key: ${secret:anthropic_api_key}
+    #       default_max_tokens: 2048
+
+  catalog:
+    chat-small:
+      pool: small-llm
+      tier: small                             # small < 10B params, mid 10B-40B, large > 40B
+      category: private-original              # private-original | private-tuned | private-endpoint
+                                              # | public-proprietary | public-hosted-open
+      context_length: 8192
+      max_output_tokens: 1024
+      licence: apache-2.0
+      cost_per_1k_input: 0.0001               # internal chargeback rate (configured currency)
+      cost_per_1k_output: 0.0002
+      capabilities: [chat, json]
+      description: Router / classification / extraction model
+      # data_classes: [public, internal, confidential, personal, restricted]   # default for private: all
+    chat-mid:
+      pool: mid-llm
+      tier: mid
+      category: private-original
+      context_length: 32768
+      max_output_tokens: 2048
+      licence: apache-2.0
+      cost_per_1k_input: 0.0004
+      cost_per_1k_output: 0.0008
+      capabilities: [chat, tools, json]
+      description: General model - chat, search answers and tool calls
+    chat-large:
+      pool: large-llm
+      tier: large
+      category: private-original
+      context_length: 131072
+      max_output_tokens: 4096
+      licence: llama-3.3-community
+      cost_per_1k_input: 0.002
+      cost_per_1k_output: 0.004
+      capabilities: [chat, tools, json]
+      description: Long multi-step agent tasks and hard reasoning
+    embedding:
+      pool: embedding
+      tier: small
+      category: private-original
+      context_length: 8192
+      licence: mit
+      cost_per_1k_input: 0.00001
+      capabilities: [embedding]
+    reranker:
+      pool: reranker
+      tier: small
+      category: private-original
+      context_length: 8192
+      licence: apache-2.0
+      cost_per_1k_input: 0.00002
+      capabilities: [rerank]
+
+    # Domain model: an adapter trained on the client's data, served on the general model's pool.
+    # domain-claims:
+    #   pool: mid-llm
+    #   tier: mid
+    #   category: private-tuned
+    #   base_model: chat-mid
+    #   adapter: claims-lora-v3              # vLLM --lora-modules name; sent as the upstream model id
+    #   capabilities: [chat, json]
+    #   context_length: 32768
+
+    # escalation-private:
+    #   pool: private-endpoint
+    #   tier: large
+    #   category: private-endpoint
+    #   capabilities: [chat, tools, json]
+    #   context_length: 200000
+
+    # Public model: no data class may reach it until listed here AND gateway.egress.enabled AND the
+    # policy engine allows `egress.send` for the request's data class.
+    # escalation-public:
+    #   pool: public-escalation
+    #   tier: large
+    #   category: public-proprietary
+    #   data_classes: [public, internal]
+    #   capabilities: [chat, tools, json]
+    #   context_length: 200000
+    #   cost_per_1k_input: 0.003
+    #   cost_per_1k_output: 0.015

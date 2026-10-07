@@ -1,0 +1,81 @@
+{{- /* Single in-cluster Redis for the Kubernetes pilot only. Production uses the managed / on-prem Redis. */ -}}
+{{- if .Values.redis.enabled }}
+{{- $r := .Values.redis }}
+{{- $sel := include "aiready.selectorLabels" (dict "root" . "name" "redis") | fromYaml }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis
+  labels:
+    {{- include "aiready.labels" (dict "root" . "name" "redis" "zone" "data") | nindent 4 }}
+spec:
+  selector:
+    {{- toYaml $sel | nindent 4 }}
+  ports:
+    - {name: redis, port: 6379, targetPort: 6379}
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: redis
+  labels:
+    {{- include "aiready.labels" (dict "root" . "name" "redis" "zone" "data") | nindent 4 }}
+spec:
+  serviceName: redis
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- toYaml $sel | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "aiready.labels" (dict "root" . "name" "redis" "zone" "data") | nindent 8 }}
+      annotations:
+        {{- include "aiready.vaultAnnotations" (dict "root" . "secrets" (list "redis_auth_token")) | nindent 8 }}
+    spec:
+      serviceAccountName: redis
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 999
+        runAsGroup: 999
+        fsGroup: 999
+        seccompProfile: {type: RuntimeDefault}
+      {{- include "aiready.scheduling" (dict "root" . "pool" "" "tolerations" (list) "selector" $sel "spread" false) | nindent 6 }}
+      containers:
+        - name: redis
+          image: {{ include "aiready.image" (dict "root" . "image" $r.image) }}
+          command: [/bin/sh, -c]
+          args:
+            - exec redis-server --requirepass "$(cat /run/secrets/redis_auth_token)" --appendonly yes --maxmemory-policy noeviction --dir /data
+          ports:
+            - {name: redis, containerPort: 6379}
+          readinessProbe:
+            tcpSocket: {port: redis}
+            periodSeconds: 10
+          resources:
+            {{- toYaml $r.resources | nindent 12 }}
+          securityContext:
+            {{- include "aiready.containerSecurityContext" . | nindent 12 }}
+          volumeMounts:
+            - {name: data, mountPath: /data}
+            {{- if ne .Values.secrets.mode "vault" }}
+            - {name: secrets, mountPath: /run/secrets, readOnly: true}
+            {{- end }}
+      {{- if ne .Values.secrets.mode "vault" }}
+      volumes:
+        {{- include "aiready.secretVolume" (dict "root" . "secrets" (list "redis_auth_token")) | nindent 8 }}
+      {{- end }}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: [ReadWriteOnce]
+        {{- with $r.storage.storageClassName }}
+        storageClassName: {{ . }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ $r.storage.size }}
+{{- end }}

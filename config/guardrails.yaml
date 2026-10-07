@@ -1,0 +1,72 @@
+# =============================================================================
+# Guardrails service (port 8090): screen inputs, screen retrieved documents for indirect injection,
+# mask personal data, validate outputs. Wiring name: `guardrails`.
+# =============================================================================
+guardrails:
+  # Detector instances by name (plugin kind `detector`). Profiles below refer to these names.
+  # Built-in types: injection, pii, toxicity, guard_model, presidio. Custom: {class: acme_ai.guards:MyDetector}
+  detectors:
+    injection:
+      type: injection
+      threshold: 0.5            # aggregate score at/above which an injection finding is "high"
+      mode: input
+      decode_payloads: true     # rescan base64 / hex blobs that decode to readable text
+      # extra_patterns:         # client-specific phrases: {name, regex, weight 0..1, category}
+      #   - {name: competitor_override, regex: "act as acme support", weight: 0.4}
+      # disabled_patterns: [pretend]
+    injection_document:         # indirect injection in retrieved / ingested documents
+      type: injection
+      threshold: 0.4
+      mode: document
+    pii:
+      type: pii
+      # entities: [EMAIL, PHONE, CREDIT_CARD, IBAN, US_SSN, UK_NI, IP_ADDRESS, DATE_OF_BIRTH, PASSPORT,
+      #            PRIVATE_KEY, JWT, AWS_ACCESS_KEY, AWS_SECRET_KEY, API_KEY, SECRET, HIGH_ENTROPY_SECRET]
+      # exclude: [IP_ADDRESS]
+      high_entropy: true
+      entropy_threshold: 4.2    # Shannon bits/char for unknown-format tokens (>= 32 chars, mixed case + digits)
+    toxicity:
+      type: toxicity
+      # categories: [threat, self_harm, harassment, profanity]
+      # extra_terms: {fraud: {check: toxicity, severity: medium, terms: ["\\bwire me\\b"]}}
+    # guard_model:              # a guard model behind the gateway route `guard` (adds ~100-300 ms)
+    #   type: guard_model
+    #   route: guard
+    #   threshold: 0.5
+    #   on_error: allow         # allow | block (fail closed)
+    # presidio:                 # pip install presidio-analyzer (+ a spaCy model)
+    #   type: presidio
+    #   language: en
+
+  # Base profile for every application.
+  defaults:
+    input_detectors: [injection, pii, toxicity]
+    output_detectors: [pii, toxicity]
+    document_detectors: [injection_document]
+    # A finding of this check at/above this severity blocks (low | medium | high | never).
+    block_on:
+      injection: high
+      toxicity: high
+      guard_model: high
+      length: low
+    pii_action: mask              # inputs: mask | block | allow
+    secret_action: mask           # inputs: mask | block (secrets never reach a model as-is)
+    output_pii_action: mask       # outputs: mask | block | allow (secrets in outputs always invalidate)
+    output_allowed_entities: []   # entity types allowed to appear in answers untouched
+    mask_entities: null           # null = mask every detected entity
+    max_input_chars: 32000
+    max_output_chars: 20000
+    banned_output: []             # regexes that must never appear in an answer
+    document_threshold: 0.4
+    document_action: drop         # drop | flag
+    audit_findings: false         # audit non-blocking findings too
+
+  # Per-application overrides (merged onto defaults; lists replace).
+  apps: {}
+  #  claims:
+  #    input_detectors: [injection, pii, toxicity, guard_model]
+  #    output_allowed_entities: [EMAIL]
+  #    banned_output: ["guaranteed (approval|payout)"]
+
+  # Roles allowed to unmask placeholders back to original values (audited).
+  unmask_roles: [pii-reader]

@@ -1,0 +1,31 @@
+# Release gate (aiready.evals.gate). Applied by `python -m aiready.evals gate ...` in CI.
+#
+# A release is blocked when any check fails:
+#   * "score must not drop": overall score vs the baseline scorecard (previous release) minus max_drop;
+#     every scorer vs its baseline minus per_scorer_max_drop;
+#   * safety suites (safety: true) must pass safety_pass_rate of their cases (1.0 = all of them);
+#   * absolute floors: min_overall, min_pass_rate, min_scorer;
+#   * cost and latency budget: max_cost_per_case, max_latency_p95_ms;
+#   * max_errors: cases where the target failed.
+# The verdict is written to the audit log (event evals.gate) and, when a registry is deployed, attached to the
+# release in the model/prompt registry.
+evals:
+  gate:
+    max_drop: 0.0
+    per_scorer_max_drop: 0.02
+    min_overall: 0.6
+    min_pass_rate: null
+    min_scorer: {}
+    safety_pass_rate: 1.0
+    max_latency_p95_ms: 8000     # end-to-end per case, incl. retrieval and checks
+    max_cost_per_case: null      # currency of observability.currency
+    max_errors: 0
+    require_baseline: false      # set true once the first release has a scorecard
+    suites:
+      claims:
+        min_overall: 0.7
+        min_scorer: {grounding: 0.7, citation_recall: 0.6}
+  # Where scorecards (JSON + markdown) are written for CI artifacts; history is also kept in the state DB.
+  output_dir: data/evals/scorecards
+  # Default concurrency of the offline runner.
+  concurrency: 4

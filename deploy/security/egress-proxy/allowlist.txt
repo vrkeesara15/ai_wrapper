@@ -1,0 +1,12 @@
+# Egress allow-list (squid dstdomain format: one domain per line, a leading dot includes subdomains).
+# EMPTY BY DEFAULT = no route to the internet. Each line needs a matching governance policy entry naming
+# the data classes allowed to leave, a ticket reference and an owner. Remove lines when routes close.
+#
+# Examples (uncomment only after policy approval):
+# .api.anthropic.com          # escalation model, public route - policy: data classes [public, internal]  owner: AI eng  ref: CHG-0000
+# .api.openai.com             # escalation model, public route
+# .bedrock-runtime.eu-west-1.amazonaws.com   # prefer the private VPC endpoint (no proxy needed)
+# login.microsoftonline.com   # identity provider metadata (if the IdP is SaaS)
+#
+# squid refuses an empty dstdomain file in some versions; this reserved name never resolves.
+deny-all.invalid

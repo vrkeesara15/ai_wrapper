@@ -1,0 +1,36 @@
+# Model weights to ship in a release bundle. Copy to models.yaml and pass with --models.
+# Only models approved in the model registry (licence recorded, version pinned) belong here.
+# build-bundle.sh hashes every file (sha256), tars each model and writes models/manifest.json;
+# verify-bundle.sh re-hashes every file inside each archive before anything is imported, and the
+# Helm chart's init container re-checks the same manifest on each GPU node before a server starts.
+#
+#   name      slot name used by the model registry and the serving pools (no spaces or slashes)
+#   source    local directory on the connected build host holding the weights (e.g. a HF snapshot)
+#   revision  exact upstream revision/commit; becomes the directory name in the model store
+#   licence   licence identifier recorded at assessment
+
+models:
+  - name: general-chat           # chat pool (GPU workers A), mid tier open-weight
+    source: /data/models/general-chat
+    revision: "0123456789abcdef0123456789abcdef01234567"
+    licence: apache-2.0
+
+  - name: router-small           # small pool (GPU workers B), quantised router model
+    source: /data/models/router-small
+    revision: "89abcdef0123456789abcdef0123456789abcdef"
+    licence: apache-2.0
+
+  - name: guard-small            # small pool, guard model that flags unsafe text
+    source: /data/models/guard-small
+    revision: "fedcba9876543210fedcba9876543210fedcba98"
+    licence: llama-community
+
+  - name: embedding              # embedding and rerank pool
+    source: /data/models/embedding
+    revision: "00112233445566778899aabbccddeeff00112233"
+    licence: mit
+
+  - name: reranker
+    source: /data/models/reranker
+    revision: "33221100ffeeddccbbaa99887766554433221100"
+    licence: apache-2.0

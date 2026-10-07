@@ -66,9 +66,11 @@ def _substitute(value: Any) -> Any:
         out = _VAR.sub(repl, value)
         if full:  # a value that is only a variable keeps YAML typing (numbers, booleans)
             try:
-                return yaml.safe_load(out) if out != "" else None
+                typed = yaml.safe_load(out) if out != "" else None
             except yaml.YAMLError:
                 return out
+            # only scalars get YAML typing; "sqlite:///:memory:" must not become a mapping
+            return out if isinstance(typed, (dict, list)) else typed
         return out
     if isinstance(value, dict):
         return {k: _substitute(v) for k, v in value.items()}

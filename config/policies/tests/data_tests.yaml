@@ -1,0 +1,119 @@
+policy_tests:
+  - name: analyst runs read-only SQL
+    input:
+      action: sql.execute
+      principal: {sub: alice, roles: [analyst]}
+      resource: {read_only: true}
+      context: {statement_type: select}
+    expect: {effect: allow, obligations: {max_rows: 1000}}
+
+  - name: non-analyst cannot run generated SQL
+    input:
+      action: sql.execute
+      principal: {sub: bob, roles: [user]}
+      resource: {read_only: true}
+    expect: deny
+
+  - name: analyst query against the replica (query service)
+    input:
+      action: sql.execute
+      principal: {sub: alice, roles: [analyst]}
+      resource: {type: sql, tables: [claims], source: generated}
+      context: {target: replica}
+    expect: {effect: allow, matched_rules: [sql.analyst.read_only]}
+
+  - name: approved metric for any signed-in user
+    input:
+      action: sql.execute
+      principal: {sub: bob, roles: [user]}
+      resource: {type: sql, source: metric, metric: open_claims}
+      context: {target: replica}
+    expect: {effect: allow, matched_rules: [sql.approved_metric]}
+
+  - name: generated SQL is analyst-only
+    input:
+      action: sql.execute
+      principal: {sub: bob, roles: [user]}
+      resource: {type: sql, source: generated}
+      context: {target: replica}
+    expect: deny
+
+  - name: generated SQL never writes, even for analysts
+    input:
+      action: sql.execute
+      principal: {sub: alice, roles: [analyst]}
+      context: {statement_type: delete}
+    expect: {effect: deny, matched_rules: [sql.write.deny]}
+
+  - name: memory write without consent is denied
+    input:
+      action: memory.write
+      principal: {sub: alice}
+      context: {consent: false}
+    expect: {effect: deny, matched_rules: [memory.write.no_consent]}
+
+  - name: memory write with consent
+    input:
+      action: memory.write
+      principal: {sub: alice}
+      context: {consent: true}
+    expect: allow
+
+  - name: tagged data readable by group member
+    input:
+      action: data.read
+      principal: {sub: alice, groups: [claims-team]}
+      resource: {collection: claims, access_tags: [claims-team]}
+    expect: {effect: allow, matched_rules: [data.read.access_tags]}
+
+  - name: tagged data not readable by outsider
+    input:
+      action: data.read
+      principal: {sub: mallory, groups: [marketing]}
+      resource: {collection: claims, access_tags: [claims-team]}
+    expect: deny
+
+  - name: restricted data needs the reader role
+    input:
+      action: data.read
+      principal: {sub: alice}
+      resource: {collection: hr, data_class: restricted}
+    expect: {effect: deny, matched_rules: [data.read.restricted]}
+
+  - name: rag answers must cite sources
+    input:
+      action: rag.answer
+      principal: {sub: alice}
+    expect: {effect: allow, obligations: {require_citations: true}}
+
+  - name: egress closed by default
+    input:
+      action: egress.send
+      principal: {sub: alice}
+      resource: {destination: vendor}
+      context: {data_class: public}
+    expect: {effect: deny, matched_rules: [egress.send.closed]}
+
+  - name: admin actions need roles
+    input:
+      action: admin.registry.approve
+      principal: {sub: alice, roles: [ai-engineer]}
+    expect: deny
+
+  - name: model approver approves
+    input:
+      action: admin.registry.approve
+      principal: {sub: carol, roles: [model-approver]}
+    expect: allow
+
+  - name: unknown sensitive action falls back to deny
+    input:
+      action: payments.transfer
+      principal: {sub: alice}
+    expect: deny
+
+  - name: agent orchestration defaults to allow
+    input:
+      action: agent.run
+      principal: {sub: alice}
+    expect: allow

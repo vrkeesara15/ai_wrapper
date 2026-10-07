@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Claims portal - assistant widget demo</title>
+  <style>
+    :root { color-scheme: light dark; }
+    body { margin: 0; font: 15px/1.5 system-ui, sans-serif; background: #f6f7f9; color: #1d2330; }
+    @media (prefers-color-scheme: dark) { body { background: #0f1218; color: #e8ebf2; } .card { background: #171b23 !important; } }
+    header { padding: 16px 24px; background: #1f3a8a; color: #fff; }
+    main { max-width: 860px; margin: 24px auto; padding: 0 16px; }
+    .card { background: #fff; border-radius: 10px; padding: 20px; margin-bottom: 16px; }
+    code { font-size: 13px; }
+    /* hostile host styles: the widget's Shadow DOM must not be affected */
+    button { background: hotpink !important; font-size: 30px !important; }
+  </style>
+</head>
+<body>
+  <header><strong>Acme Claims</strong> - existing application (unchanged)</header>
+  <main>
+    <div class="card">
+      <h1>Claim C-1042</h1>
+      <p>Status: open. Policy: Home Plus. This page stands in for any existing screen. The only change is the
+        script tag at the bottom of the page.</p>
+      <p>Optional page API: <code>AIReadyAssistant.send("What does my policy cover for flood?")</code></p>
+    </div>
+  </main>
+
+  <!--
+    For a local demo:  uvicorn aiready.assistant.api:create_app --factory --port 8130
+    then serve this file from an origin listed in assistant.apps.demo.allowed_origins (config/assistant.yaml),
+    e.g.  python -m http.server 8000 -d web/widget   ->  http://localhost:8000/demo.html
+    With no identity bridge configured, hand the widget a token from the page (dev only):
+      AIReadyAssistant.setToken("<token from `aiready token issue`>")
+  -->
+  <script src="http://localhost:8130/widget/assistant-widget.js"
+          data-endpoint="http://localhost:8130"
+          data-app="demo"
+          data-feature="claim-detail"
+          data-theme="auto"
+          defer></script>
+  <script>
+    // Show page context to the assistant (optional): the widget sends it with each turn.
+    window.addEventListener("load", function () {
+      if (window.AIReadyAssistant) AIReadyAssistant.setContext({ screen: "claim-detail", claim_id: "C-1042" });
+    });
+  </script>
+</body>
+</html>

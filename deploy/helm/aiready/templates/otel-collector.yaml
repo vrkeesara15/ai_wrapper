@@ -1,0 +1,81 @@
+{{- /* Telemetry collector: OTLP in, personal data removed, exported to metrics / trace / log stores. */ -}}
+{{- if .Values.otelCollector.enabled }}
+{{- $o := .Values.otelCollector }}
+{{- $sel := include "aiready.selectorLabels" (dict "root" . "name" "otel-collector") | fromYaml }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: otel-collector
+  labels:
+    {{- include "aiready.labels" (dict "root" . "name" "otel-collector" "zone" "platform") | nindent 4 }}
+data:
+  config.yaml: |-
+{{ .Files.Get "files/observability/otel-collector.yaml" | indent 4 }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: otel-collector
+  labels:
+    {{- include "aiready.labels" (dict "root" . "name" "otel-collector" "zone" "platform") | nindent 4 }}
+spec:
+  replicas: {{ $o.replicas }}
+  selector:
+    matchLabels:
+      {{- toYaml $sel | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "aiready.labels" (dict "root" . "name" "otel-collector" "zone" "platform") | nindent 8 }}
+      annotations:
+        checksum/config: {{ .Files.Get "files/observability/otel-collector.yaml" | sha256sum }}
+    spec:
+      serviceAccountName: otel-collector
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      {{- include "aiready.imagePullSecrets" . | nindent 6 }}
+      securityContext:
+        {{- include "aiready.podSecurityContext" . | nindent 8 }}
+      {{- include "aiready.scheduling" (dict "root" . "pool" "" "tolerations" (list) "selector" $sel "spread" true) | nindent 6 }}
+      containers:
+        - name: otel-collector
+          image: {{ include "aiready.image" (dict "root" . "image" $o.image) }}
+          args: [--config=/etc/otelcol/config.yaml]
+          env:
+            - {name: AIREADY_ENV, value: {{ .Values.global.environment | quote }}}
+            - {name: AIREADY_TEMPO_ENDPOINT, value: {{ $o.tempoEndpoint | quote }}}
+            - {name: AIREADY_LOKI_ENDPOINT, value: {{ $o.lokiEndpoint | quote }}}
+          ports:
+            - {name: otlp-grpc, containerPort: 4317}
+            - {name: otlp-http, containerPort: 4318}
+            - {name: prom, containerPort: 8889}
+            - {name: health, containerPort: 13133}
+          readinessProbe:
+            httpGet: {path: /, port: health}
+          livenessProbe:
+            httpGet: {path: /, port: health}
+          resources:
+            {{- toYaml $o.resources | nindent 12 }}
+          securityContext:
+            {{- include "aiready.containerSecurityContext" . | nindent 12 }}
+          volumeMounts:
+            - {name: config, mountPath: /etc/otelcol, readOnly: true}
+      volumes:
+        - name: config
+          configMap: {name: otel-collector}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: otel-collector
+  labels:
+    {{- include "aiready.labels" (dict "root" . "name" "otel-collector" "zone" "platform") | nindent 4 }}
+    aiready.io/metrics-otel: "true"
+spec:
+  selector:
+    {{- toYaml $sel | nindent 4 }}
+  ports:
+    - {name: otlp-grpc, port: 4317, targetPort: otlp-grpc}
+    - {name: otlp-http, port: 4318, targetPort: otlp-http}
+    - {name: prom, port: 8889, targetPort: prom}
+{{- end }}

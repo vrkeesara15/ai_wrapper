@@ -1,0 +1,92 @@
+# OPA Gatekeeper: admission rules for the AI-Ready namespaces.
+#  1. Images must come from the internal registry (and be referenced by digest in production).
+#  2. Pods must follow the restricted profile the chart already sets (defence in depth against hand-made pods).
+# Signature verification is not expressible in plain Rego; pair these with Ratify (Gatekeeper external data)
+# or use the Kyverno alternative in ../kyverno, which verifies cosign signatures natively.
+apiVersion: templates.gatekeeper.sh/v1
+kind: ConstraintTemplate
+metadata:
+  name: aireadyallowedregistries
+  annotations:
+    description: Containers must use images from approved (internal) registries, optionally pinned by digest.
+spec:
+  crd:
+    spec:
+      names:
+        kind: AIReadyAllowedRegistries
+      validation:
+        openAPIV3Schema:
+          type: object
+          properties:
+            registries:
+              type: array
+              items: {type: string}
+            requireDigest:
+              type: boolean
+  targets:
+    - target: admission.k8s.gatekeeper.sh
+      rego: |
+        package aireadyallowedregistries
+
+        containers[c] { c := input.review.object.spec.containers[_] }
+        containers[c] { c := input.review.object.spec.initContainers[_] }
+        containers[c] { c := input.review.object.spec.ephemeralContainers[_] }
+
+        allowed(image) {
+          reg := input.parameters.registries[_]
+          startswith(image, reg)
+        }
+
+        violation[{"msg": msg}] {
+          c := containers[_]
+          not allowed(c.image)
+          msg := sprintf("container %v uses image %v from a registry that is not approved: %v", [c.name, c.image, input.parameters.registries])
+        }
+
+        violation[{"msg": msg}] {
+          input.parameters.requireDigest
+          c := containers[_]
+          not contains(c.image, "@sha256:")
+          msg := sprintf("container %v image %v must be pinned by digest", [c.name, c.image])
+        }
+---
+apiVersion: templates.gatekeeper.sh/v1
+kind: ConstraintTemplate
+metadata:
+  name: aireadyrestrictedpod
+  annotations:
+    description: runAsNonRoot, read-only root filesystem, no privilege escalation, all capabilities dropped.
+spec:
+  crd:
+    spec:
+      names:
+        kind: AIReadyRestrictedPod
+  targets:
+    - target: admission.k8s.gatekeeper.sh
+      rego: |
+        package aireadyrestrictedpod
+
+        containers[c] { c := input.review.object.spec.containers[_] }
+        containers[c] { c := input.review.object.spec.initContainers[_] }
+
+        nonroot(c) { c.securityContext.runAsNonRoot == true }
+        nonroot(c) { not c.securityContext.runAsNonRoot == false; input.review.object.spec.securityContext.runAsNonRoot == true }
+
+        drops_all(c) { c.securityContext.capabilities.drop[_] == "ALL" }
+
+        violation[{"msg": sprintf("container %v must run as non-root", [c.name])}] {
+          c := containers[_]
+          not nonroot(c)
+        }
+        violation[{"msg": sprintf("container %v must set readOnlyRootFilesystem: true", [c.name])}] {
+          c := containers[_]
+          not c.securityContext.readOnlyRootFilesystem == true
+        }
+        violation[{"msg": sprintf("container %v must set allowPrivilegeEscalation: false", [c.name])}] {
+          c := containers[_]
+          not c.securityContext.allowPrivilegeEscalation == false
+        }
+        violation[{"msg": sprintf("container %v must drop ALL capabilities", [c.name])}] {
+          c := containers[_]
+          not drops_all(c)
+        }

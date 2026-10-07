@@ -1,0 +1,120 @@
+{{- /*
+KEDA ScaledObjects: queue-depth scaling for embedding, ingestion workers and agent runs ("adds replicas
+on queue depth, keeps one warm"), and for model-serving pools on requests waiting. idleReplicas: 0 gives
+stage 3 scale-to-zero for idle GPU pools. Prometheus triggers default to keda.prometheusServerAddress;
+redis triggers with authenticationRef "redis" use the chart's TriggerAuthentication (secret redis_auth_token).
+*/ -}}
+{{- if .Values.keda.enabled }}
+{{- $usesRedis := false }}
+{{- range $name, $c := .Values.components }}
+{{- if and $c.enabled $c.keda $c.keda.enabled }}
+---
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "aiready.labels" (dict "root" $ "name" $name "zone" $c.zone) | nindent 4 }}
+spec:
+  scaleTargetRef:
+    name: {{ $name }}
+  pollingInterval: {{ $.Values.keda.pollingInterval }}
+  cooldownPeriod: {{ $.Values.keda.cooldownPeriod }}
+  minReplicaCount: {{ $c.keda.minReplicas }}
+  maxReplicaCount: {{ $c.keda.maxReplicas }}
+  {{- if not (kindIs "invalid" $c.keda.idleReplicas) }}
+  idleReplicaCount: {{ $c.keda.idleReplicas }}
+  {{- end }}
+  triggers:
+  {{- range $t := $c.keda.triggers }}
+    - type: {{ $t.type }}
+      {{- with $t.metricType }}
+      metricType: {{ . }}
+      {{- end }}
+      metadata:
+        {{- if eq $t.type "prometheus" }}
+        serverAddress: {{ $t.metadata.serverAddress | default $.Values.keda.prometheusServerAddress | quote }}
+        {{- end }}
+        {{- if eq $t.type "redis" }}
+        {{- $usesRedis = true }}
+        address: {{ $t.metadata.address | default $.Values.keda.redisAddress | quote }}
+        enableTLS: {{ $.Values.keda.redisEnableTLS | quote }}
+        {{- end }}
+        {{- range $k, $v := $t.metadata }}
+        {{- if not (has $k (list "serverAddress" "address")) }}
+        {{ $k }}: {{ $v | quote }}
+        {{- end }}
+        {{- end }}
+      {{- if $t.authenticationRef }}
+      authenticationRef:
+        name: {{ eq $t.authenticationRef "redis" | ternary "aiready-redis" $t.authenticationRef }}
+      {{- end }}
+  {{- end }}
+{{- end }}
+{{- end }}
+{{- if .Values.modelServing.enabled }}
+{{- range $poolName, $pool := .Values.modelServing.pools }}
+{{- range $m := $pool.models }}
+{{- if and $m.keda $m.keda.enabled }}
+---
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: model-{{ $m.name }}
+  labels:
+    {{- include "aiready.labels" (dict "root" $ "name" (printf "model-%s" $m.name) "zone" "model") | nindent 4 }}
+    aiready.io/pool: {{ $poolName }}
+spec:
+  scaleTargetRef:
+    name: model-{{ $m.name }}
+  pollingInterval: {{ $.Values.keda.pollingInterval }}
+  # GPU servers are slow to start (weights load): scale down cautiously.
+  cooldownPeriod: {{ $m.keda.cooldownPeriod | default 900 }}
+  minReplicaCount: {{ $m.keda.minReplicas }}
+  maxReplicaCount: {{ $m.keda.maxReplicas }}
+  {{- if not (kindIs "invalid" $m.keda.idleReplicas) }}
+  idleReplicaCount: {{ $m.keda.idleReplicas }}
+  {{- end }}
+  triggers:
+    - type: prometheus
+      metadata:
+        serverAddress: {{ $.Values.modelServing.prometheusServerAddress | quote }}
+        query: {{ $m.keda.query | quote }}
+        threshold: {{ $m.keda.threshold | quote }}
+        {{- with $m.keda.activationThreshold }}
+        activationThreshold: {{ . | quote }}
+        {{- end }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- if $usesRedis }}
+---
+apiVersion: keda.sh/v1alpha1
+kind: TriggerAuthentication
+metadata:
+  name: aiready-redis
+  labels:
+    {{- include "aiready.labels" (dict "root" . "name" "keda-redis" "zone" "platform") | nindent 4 }}
+spec:
+  {{- if eq .Values.secrets.mode "vault" }}
+  {{- $v := .Values.secrets.vault }}
+  hashiCorpVault:
+    address: {{ $v.address | quote }}
+    authentication: kubernetes
+    role: {{ $v.role | quote }}
+    mount: kubernetes
+    credential:
+      serviceAccount: /var/run/secrets/kubernetes.io/serviceaccount/token
+    secrets:
+      - parameter: password
+        key: {{ $v.field }}
+        path: {{ printf $v.pathTemplate "redis_auth_token" | quote }}
+  {{- else }}
+  secretTargetRef:
+    - parameter: password
+      name: {{ .Values.secrets.existingSecret }}
+      key: redis_auth_token
+  {{- end }}
+{{- end }}
+{{- end }}

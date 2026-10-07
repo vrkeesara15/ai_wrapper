@@ -1,0 +1,147 @@
+# =============================================================================
+# AI gateway: every model call passes 1 Authenticate, 2 Limit, 3 Screen, 4 Reuse, 5 Route, 6 Call,
+# 7 Validate, 8 Record. Routes, budgets, rate limits and keys are configuration (and editable live through
+# the admin API on port 8081); the application never changes.
+# =============================================================================
+
+gateway:
+  # --- 1 Authenticate --------------------------------------------------------------------------------
+  auth:
+    require_client_identity: false            # true: also require X-Service-Token or a gateway API key
+    api_key_header: X-API-Key
+    service_only_operations: [embed, rerank, batch]   # allowed without a signed-in user (pipelines)
+    team_claim: team                          # token claim used for team budgets and chargeback
+
+  # --- 2 Limit: rate limits (sliding window) and token budgets ----------------------------------------
+  rate_limits:
+    per-user:
+      scope: user                             # user | team | app | feature | tenant
+      requests: 120
+      window_seconds: 60
+    per-app:
+      scope: app
+      requests: 3000
+      window_seconds: 60
+    # claims-search:
+    #   scope: feature
+    #   match: claims-search                  # only this feature ('*' = every value)
+    #   requests: 600
+    #   window_seconds: 60
+    #   operations: [chat, stream]            # empty = all operations
+
+  budgets:
+    team-daily:
+      scope: team
+      period: day                             # day | month (UTC)
+      max_tokens: 5000000
+      action: block                           # block -> HTTP 429; warn -> recorded only
+    user-daily:
+      scope: user
+      period: day
+      max_tokens: 500000
+      action: block
+    # claims-monthly-cost:
+    #   scope: feature
+    #   match: claims-assistant
+    #   period: month
+    #   max_cost: 2500
+    #   action: warn
+
+  # --- 3 Screen ----------------------------------------------------------------------------------------
+  guardrails:
+    enabled: true
+    screen_roles: [user, tool]                # tool results are screened too (indirect injection)
+    apply_masking: true                       # forward masked text to the model
+    restore_masked_in_output: true            # the user sees their own values in the answer
+    block_checks: [injection]
+    fail_closed: true
+
+  # --- 4 Reuse -----------------------------------------------------------------------------------------
+  cache:
+    enabled: true
+    exact: true
+    semantic: true
+    exact_ttl_seconds: 600
+    semantic_threshold: 0.92
+    semantic_ttl_seconds: 3600
+    ttl_by_content_type: {policy: 86400, news: 900}
+    max_temperature: 0.3                      # sampled answers above this are not reused
+    embedding_model: embedding
+
+  # --- 5 Route -----------------------------------------------------------------------------------------
+  # The smallest model that passed the evaluation for the task wins; larger ones are the fallback chain.
+  default_route: auto
+  allow_direct_models: true                   # a request may name a catalog model directly (pinned, no fallback)
+  routes:
+    auto:
+      description: General chat - most requests
+      match: {model: [auto, chat, default]}
+      candidates: [chat-small, chat-mid, chat-large]
+      eval_pass: [chat-mid, chat-large]       # chat-small has not passed the general chat evaluation
+      escalate_prompt_tokens: 6000
+    classify:
+      description: Routing, classification, extraction
+      priority: 10
+      match: {task: [classify, extract, route]}
+      candidates: [chat-small, chat-mid]
+      eval_pass: [chat-small, chat-mid]
+      max_tokens: 512
+    agent:
+      description: Long multi-step agent tasks and hard reasoning
+      priority: 10
+      match: {task: [agent, reasoning, plan]}
+      candidates: [chat-large, chat-mid]
+      eval_pass: [chat-large]
+      fallback: [chat-mid]
+      response_mode: check_then_send
+    # escalation:
+    #   priority: 20
+    #   match: {task: [escalate]}
+    #   candidates: [escalation-private, escalation-public]
+    #   eval_pass: [escalation-private, escalation-public]
+
+  # --- 6 Call ------------------------------------------------------------------------------------------
+  call:
+    timeout_seconds: 60
+    stream_first_token_timeout_seconds: 30
+    retries: 1                                # per model, before falling back
+    retry_backoff_seconds: 0.2
+    max_fallbacks: 2
+    reserve_output_tokens: 1024
+    prefix_cache_ordering: true
+
+  # --- 7 Validate --------------------------------------------------------------------------------------
+  validate:
+    enabled: true
+    on_failure: regenerate_once               # regenerate_once | reject | flag
+
+  streaming:
+    default_mode: stream_then_verify          # or check_then_send (Mode A) for anything that advises or acts
+
+  # Public (outside) models. Closed: needs this switch, the model's data_classes, and policy egress.send.
+  egress:
+    enabled: false
+
+  # Embeddings and rerank: a catalog pool, or the embedding / rerank services.
+  embedding: {target: pool, model: embedding, max_items: 2048}
+  rerank: {target: pool, model: reranker, max_items: 1000}
+
+  # Batch and async: queued work runs off-peak on spare capacity.
+  batches:
+    enabled: true
+    window: "22:00-06:00"                     # local time; "always" to run whenever the worker polls
+    poll_seconds: 30
+    max_requests_per_batch: 1000
+    topic: gateway.batches
+    # queue: {type: redis, url: "${AIREADY_REDIS_URL}"}   # default: the platform `queue:` section
+
+  usage:
+    url: null                                 # default: the platform state database
+
+  admin:
+    required_role: platform-admin
+    overlay_file: null                        # e.g. config/overlays/admin/gateway-admin.yaml
+    sync_seconds: 5                           # data-plane replicas pull admin changes this often
+
+  # kv: {type: redis, url: "${AIREADY_REDIS_URL}"}  # default: the platform `kv:` section
+  currency: USD

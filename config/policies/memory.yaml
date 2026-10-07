@@ -1,0 +1,39 @@
+# Policy domain: memory - long-term facts and preferences need the user's consent.
+policies:
+  memory:
+    version: 1.0.0
+    description: Memory writes and reads.
+    rules:
+      - id: memory.write.consent
+        description: Long-term memory is written only with the user's consent.
+        action: memory.write
+        effect: allow
+        when:
+          principal.authenticated: true
+          context.consent: true
+
+      - id: memory.write.no_consent
+        description: Memory writes require the user's consent.
+        action: memory.write
+        effect: deny
+        when:
+          context.consent: {ne: true}
+
+      - id: memory.own
+        description: Users read and forget only their own memory.
+        action: [memory.read, memory.forget, memory.session]
+        effect: allow
+        when:
+          principal.authenticated: true
+          any:
+            - resource.user: {exists: false}
+            - resource.user: {ref: principal.sub}
+
+      - id: memory.other_user
+        description: Nobody reads another user's memory through the assistant.
+        action: [memory.read, memory.forget, memory.session, memory.write]
+        effect: deny
+        when:
+          resource.user: {exists: true, ne: {ref: principal.sub}}
+          not:
+            principal.roles: {contains: privacy-officer}

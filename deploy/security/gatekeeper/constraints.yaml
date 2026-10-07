@@ -1,0 +1,32 @@
+# Constraints applying the templates to the AI-Ready namespaces. Start with enforcementAction: dryrun,
+# review the audit results, then switch to deny.
+apiVersion: constraints.gatekeeper.sh/v1beta1
+kind: AIReadyAllowedRegistries
+metadata:
+  name: aiready-internal-registry-only
+spec:
+  enforcementAction: deny
+  match:
+    kinds:
+      - apiGroups: [""]
+        kinds: [Pod]
+    namespaces: [aiready, aiready-models, aiready-batch]
+  parameters:
+    registries:
+      - registry.internal.example/        # internal registry (on-prem) / ECR in the client account (cloud)
+      - 123456789012.dkr.ecr.eu-west-1.amazonaws.com/
+    requireDigest: true
+---
+apiVersion: constraints.gatekeeper.sh/v1beta1
+kind: AIReadyRestrictedPod
+metadata:
+  name: aiready-restricted-pods
+spec:
+  enforcementAction: deny
+  match:
+    kinds:
+      - apiGroups: [""]
+        kinds: [Pod]
+    namespaces: [aiready]
+    # The model-serving pods write kernel caches under emptyDir but keep a read-only root; the egress
+    # proxy and data stores (if run in-cluster) live in their own namespaces with their own constraints.

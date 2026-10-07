@@ -1,0 +1,36 @@
+policy_tests:
+  - name: read tool runs freely
+    input:
+      action: tool.call
+      principal: {sub: alice}
+      resource: {tool: lookup_claim, effect: read}
+    expect: {effect: allow, matched_rules: [tool.read.allow]}
+
+  - name: payment waits for a person
+    input:
+      action: tool.call
+      principal: {sub: alice}
+      resource: {tool: pay_claim, effect: payment}
+    expect: {effect: require_approval, allow: false, obligations: {approval_roles: [approver]}}
+
+  - name: write with approval id proceeds
+    input:
+      action: facade.call
+      principal: {sub: alice}
+      resource: {endpoint: update_address, effect: write}
+      context: {approval_id: apr_123, approved: true}
+    expect: {effect: allow, matched_rules: [tool.side_effect.approved]}
+
+  - name: tool requiring a role the caller lacks
+    input:
+      action: tool.call
+      principal: {sub: alice, roles: [user]}
+      resource: {tool: export_all, effect: read, required_roles: [auditor]}
+    expect: {effect: deny, matched_rules: [tool.required_roles]}
+
+  - name: tool requiring a role the caller holds
+    input:
+      action: tool.call
+      principal: {sub: alice, roles: [auditor]}
+      resource: {tool: export_all, effect: read, required_roles: [auditor]}
+    expect: allow

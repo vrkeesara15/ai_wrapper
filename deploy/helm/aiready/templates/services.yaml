@@ -1,0 +1,23 @@
+{{- /* ClusterIP Services named after the component (the wiring overlay uses these short names). */ -}}
+{{- range $name, $c := .Values.components }}
+{{- if and $c.enabled $c.port }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "aiready.labels" (dict "root" $ "name" $name "zone" $c.zone) | nindent 4 }}
+    aiready.io/metrics: "true"
+    aiready.io/job: aiready
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "aiready.selectorLabels" (dict "root" $ "name" $name) | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ $c.port }}
+      targetPort: http
+      protocol: TCP
+{{- end }}
+{{- end }}

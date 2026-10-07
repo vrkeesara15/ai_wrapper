@@ -40,6 +40,7 @@ class Principal(BaseModel):
     name: str | None = None
     service: str | None = None
     actor: str | None = None  # agent / client acting for the user (e.g. "agent:claims-assistant")
+    jti: str | None = None  # token id, so a single token can be revoked during an incident
     token: str | None = Field(default=None, exclude=True, repr=False)
     claims: dict[str, Any] = Field(default_factory=dict, exclude=True, repr=False)
 
@@ -172,7 +173,8 @@ class TokenService:
             sub=str(claims["sub"]), tenant=claims.get("tenant", "default"), app=claims.get("app", "default"),
             roles=list(claims.get("roles") or []), groups=list(claims.get("groups") or []),
             scopes=list(claims.get("scopes") or []), email=claims.get("email"), name=claims.get("name"),
-            actor=act.get("sub") if isinstance(act, dict) else None, token=token, claims=claims,
+            actor=act.get("sub") if isinstance(act, dict) else None, jti=claims.get("jti"), token=token,
+            claims=claims,
         )
 
 
@@ -213,7 +215,42 @@ def set_token_service(svc: TokenService | None) -> None:
     _env_token_service.cache_clear()
 
 
-def _bearer(value: str | None) -> str | None:
+# --------------------------------------------------------------------------- revocation
+# During an incident, governance puts a subject or token id on a deny-list (KV keys revoked:sub:<sub> and
+# revoked:jti:<jti>). Every service checks it on every request, so a revoked user is cut off everywhere, not
+# only at policy decision points. The governance service registers its own checker when it runs in-process;
+# otherwise the shared KV from `governance.kv` is read directly (must be redis when services are split).
+
+_revocation_checker: Any = None
+_revocation_kv: Any = None
+
+
+def set_revocation_checker(fn: Any) -> None:
+    """Install ``fn(principal) -> reason | None``. ``None`` restores the KV-based default."""
+    global _revocation_checker, _revocation_kv
+    _revocation_checker = fn
+    _revocation_kv = None
+
+
+def check_revoked(p: Principal) -> str | None:
+    global _revocation_kv
+    if _revocation_checker is not None:
+        return _revocation_checker(p)
+    if _revocation_kv is None:
+        from aiready.core.config import get_config
+        from aiready.core.stores import make_kv
+
+        spec = get_config().get("governance.kv") or {"type": "memory"}
+        if (spec.get("type") if isinstance(spec, dict) else spec) == "memory":
+            return None  # nothing shared to read; the in-process governance service registers its checker
+        _revocation_kv = make_kv(spec)
+    for key in (f"sub:{p.sub}", f"jti:{p.jti}" if p.jti else None):
+        if key and _revocation_kv.get(f"revoked:{key}"):
+            return f"{key} revoked"
+    return None
+
+
+def bearer_token(value: str | None) -> str | None:
     if not value:
         return None
     parts = value.split(" ", 1)
@@ -222,7 +259,7 @@ def _bearer(value: str | None) -> str | None:
 
 def principal_from_headers(headers: Any, *, allow_service_only: bool = False) -> Principal:
     ts = get_token_service()
-    user_token = _bearer(headers.get(USER_HEADER) or headers.get(USER_HEADER.lower()))
+    user_token = bearer_token(headers.get(USER_HEADER) or headers.get(USER_HEADER.lower()))
     svc_token = headers.get(SERVICE_HEADER) or headers.get(SERVICE_HEADER.lower())
     service: str | None = None
     if svc_token:
@@ -235,6 +272,9 @@ def principal_from_headers(headers: Any, *, allow_service_only: bool = False) ->
             return Principal(sub=f"svc:{service}", roles=["service"], service=service, token=svc_token)
         raise AuthenticationError("missing user token")
     p = ts.verify(user_token)
+    reason = check_revoked(p)
+    if reason:
+        raise AuthenticationError(f"token rejected: {reason}")
     if p.is_service_only and not allow_service_only:
         raise AuthenticationError("a user token is required: agents act as the signed-in user")
     p.service = service
@@ -252,3 +292,6 @@ async def current_principal_or_service(request: Request) -> Principal:
     p = principal_from_headers(request.headers, allow_service_only=True)
     request.state.principal = p
     return p
+
+
+_bearer = bearer_token  # backwards-compatible alias
