@@ -1,0 +1,43 @@
+# =====================================================================================================
+# Assistant API + embeddable widget (package aiready.assistant, port 8130)
+#
+# The widget is added to an existing app with one script tag (web/widget/README.md). Each chat turn starts
+# a workflow run chosen per app and feature. Apps listed in platform.yaml `apps:` are picked up
+# automatically (default_workflow, collection, allowed_origins); entries here add widget settings.
+# =====================================================================================================
+assistant:
+  default_workflow: retrieval_chain
+
+  apps:
+    claims:
+      title: Claims helper
+      greeting: Hi! Ask me about a claim, a policy or our procedures.
+      workflow: claims_assistant              # default for this app
+      features:                               # data-feature / X-Feature -> workflow
+        claim-detail: claims_agent
+        policy-help: retrieval_chain
+      collection: claims-kb
+      allowed_origins: ["http://localhost:8000", "http://127.0.0.1:8000"]   # pages embedding the widget
+      theme: {accent: "#1f3a8a"}
+    demo:
+      title: Assistant demo
+      workflow: retrieval_chain
+      allowed_origins: ["http://localhost:8000"]
+
+  allowed_origins: []                         # allowed for every app (avoid in production)
+
+  # App session -> AI-Ready token. The widget POSTs to /v1/assistant/session with the browser's cookies;
+  # the configured cookies are relayed to the identity bridge (aiready.integration, port 8150).
+  identity_bridge:
+    url: ${AIREADY_IDENTITY_BRIDGE_URL:-http://localhost:8150}
+    exchange_path: /v1/token                  # identity bridge exchange endpoint (returns access_token)
+    validator: null                           # pin a bridge session validator; null = bridge tries each
+    forward_cookies: [LEGACYSESSID]           # only these cookies leave the browser request; empty = all
+    forward_headers: [X-CSRF-Token]
+    timeout_seconds: 10
+
+  static_dir: null                            # directory with widget/ and webmcp/ (default: the repo's web/)
+  feedback_namespace: feedback                # DocStore namespace used when observability is not wired
+  max_message_chars: 8000
+  max_history_turns: 20
+  stream_ping_seconds: 15

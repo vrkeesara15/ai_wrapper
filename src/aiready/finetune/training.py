@@ -14,7 +14,7 @@ from __future__ import annotations
 import inspect
 import logging
 import re
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 import yaml
@@ -75,13 +75,18 @@ async def resolve_base_model(name: str, cfg: FinetuneConfig) -> BaseModelPin:
             if inspect.isawaitable(res):
                 res = await res
             data = res.model_dump() if hasattr(res, "model_dump") else res
-            if isinstance(data, dict) and (data.get("revision") or data.get("digest")):
-                pin = BaseModelPin(repo=data.get("repo") or data.get("source") or data.get("uri") or name,
-                                   revision=str(data.get("revision") or data.get("digest")),
-                                   served_name=data.get("served_name") or data.get("name") or name,
-                                   license=data.get("license"))
-                if data.get("approved") is False or data.get("status") in ("rejected", "retired"):
+            if isinstance(data, dict):
+                if data.get("disabled") or data.get("status") in ("draft", "deprecated", "rejected", "retired") \
+                        or data.get("approved") is False:
                     raise ValidationFailed(f"base model {name} is not approved in the registry")
+                # The registry record itself is immutable per version; its weights checksum pins the bytes.
+                revision = (data.get("revision") or data.get("digest") or data.get("weights_checksum")
+                            or (f"{data.get('name', name)}@{data['version']}" if data.get("version") else None))
+                if revision:
+                    pin = BaseModelPin(repo=data.get("repo") or data.get("source") or data.get("endpoint") or name,
+                                       revision=str(revision), served_name=data.get("served_name") or data.get("name") or name,
+                                       license=data.get("license") or data.get("licence"),
+                                       registry_version=str(data["version"]) if data.get("version") else None)
     except ValidationFailed:
         raise
     except Exception as exc:
@@ -288,7 +293,7 @@ def _minutes(hhmm: str) -> int:
 def is_off_peak(when: datetime, windows: list[str]) -> bool:
     """Whether ``when`` (UTC) falls in one of the windows, e.g. ``Mon-Fri 20:00-06:00`` (crosses midnight:
     Friday 20:00 to Saturday 06:00 is included) or ``Sat-Sun 00:00-24:00``."""
-    when = when.astimezone(timezone.utc) if when.tzinfo else when.replace(tzinfo=timezone.utc)
+    when = when.astimezone(UTC) if when.tzinfo else when.replace(tzinfo=UTC)
     day, t = when.weekday(), when.hour * 60 + when.minute
     for w in windows:
         days_s, _, times = w.strip().partition(" ")

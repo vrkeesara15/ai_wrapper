@@ -26,8 +26,8 @@ from aiready.evals.golden import EvalCase, EvalSuite, Persona, validate_suite
 from aiready.evals.scorers import (
     DEFAULT_QA_SCORERS,
     DEFAULT_SAFETY_SCORERS,
-    Scorer,
     ScoreInput,
+    Scorer,
     ScoreResult,
     build_scorers,
 )

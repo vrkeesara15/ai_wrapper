@@ -8,6 +8,7 @@ conditions (time windows, tenants...) without a code change. Revoked callers are
 """
 
 from __future__ import annotations
+from aiready.core.wiring import local as _local
 
 from typing import Any, Literal
 
@@ -90,7 +91,7 @@ class PolicyTestBody(BaseModel):
 
 
 def create_app(service: GovernanceService | None = None) -> FastAPI:
-    svc = service or GovernanceService.from_config()
+    svc = service or _local("policy")
     if service is None:
         from aiready.core.identity import set_revocation_checker
 

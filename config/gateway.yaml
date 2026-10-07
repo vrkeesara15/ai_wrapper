@@ -94,6 +94,36 @@ gateway:
       eval_pass: [chat-large]
       fallback: [chat-mid]
       response_mode: check_then_send
+    # Logical model names used by the platform's own services. Services never name a concrete model; they ask
+    # for a role ("small", "judge", "guard"...) and the routing table decides, so swapping a model is config.
+    small:
+      description: Query rewriting, summaries, routing decisions (rag.planner, memory, workflow routers)
+      priority: 5
+      match: {model: [small, fast]}
+      candidates: [chat-small, chat-mid]
+      eval_pass: [chat-small, chat-mid]
+      max_tokens: 512
+    judge:
+      description: LLM-as-judge for grounding checks and evaluation scorers
+      priority: 5
+      match: {model: [judge]}
+      candidates: [chat-mid, chat-large]
+      eval_pass: [chat-mid, chat-large]
+      response_mode: check_then_send
+    guard:
+      description: Guard model for input/output safety classification (guardrails guard_model detector)
+      priority: 5
+      match: {model: [guard]}
+      candidates: [chat-small, chat-mid]
+      eval_pass: [chat-small, chat-mid]
+      max_tokens: 256
+    large:
+      description: Explicit request for the strongest private model
+      priority: 5
+      match: {model: [large, strong]}
+      candidates: [chat-large, chat-mid]
+      eval_pass: [chat-large]
+      fallback: [chat-mid]
     # escalation:
     #   priority: 20
     #   match: {task: [escalate]}

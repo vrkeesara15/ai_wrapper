@@ -22,14 +22,15 @@ from __future__ import annotations
 
 import asyncio
 import fnmatch
-import logging
 import hashlib
 import json
+import logging
 import threading
 import time
 import uuid
 import weakref
-from typing import Any, Callable, Literal
+from collections.abc import Callable
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 

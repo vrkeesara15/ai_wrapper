@@ -82,12 +82,24 @@ class TokenService:
 
     def __init__(self, *, issuer: str = "aiready", audience: str = "aiready", algorithm: str = "HS256",
                  secret: str | None = None, private_key: str | None = None, public_key: str | None = None,
-                 ttl_seconds: int = 900, leeway: int = 30, trusted_issuers: list[dict[str, Any]] | None = None):
+                 ttl_seconds: int = 900, leeway: int = 30, trusted_issuers: list[dict[str, Any]] | None = None,
+                 keyring: list[dict[str, Any]] | None = None):
         self.issuer, self.audience, self.algorithm = issuer, audience, algorithm
         self.ttl, self.leeway = ttl_seconds, leeway
         self.secret = secret
         self.private_key, self.public_key = private_key, public_key
         self.trusted_issuers = trusted_issuers or []
+        # Keyring for staged rotation: [{kid, use: user|service, status: active|verify|retired,
+        # secret | private_key + public_key}]. Tokens carry the kid in their header; every non-retired key
+        # verifies, the active key per use signs. Without a keyring the single secret/key pair is used.
+        self.keyring = [k for k in (keyring or []) if k.get("status") != "retired"]
+        if self.keyring:
+            active = next((k for k in self.keyring if k.get("status") == "active"), None)
+            if active is not None and not secret and not public_key:
+                secret = secret or active.get("secret")
+                self.secret = secret
+                self.public_key = self.public_key or active.get("public_key")
+                public_key = self.public_key
         if algorithm.startswith("HS") and not secret:
             raise ConfigError("HS* token signing requires a secret (secret:token_signing_key)")
         if not algorithm.startswith("HS") and not public_key:
@@ -104,6 +116,33 @@ class TokenService:
     @property
     def _verify_key(self) -> str:
         return self.secret if self.algorithm.startswith("HS") else self.public_key  # type: ignore[return-value]
+
+    def _active_key(self, use: str) -> dict[str, Any] | None:
+        for wanted in (use, "user"):
+            for k in self.keyring:
+                if k.get("status") == "active" and k.get("use", "user") == wanted:
+                    return k
+        return None
+
+    def _sign(self, claims: dict[str, Any], use: str = "user") -> str:
+        k = self._active_key(use)
+        if k is None:
+            return jwt.encode(claims, self._signing_key, algorithm=self.algorithm)
+        key = k.get("secret") if self.algorithm.startswith("HS") else k.get("private_key")
+        if not key:
+            raise ConfigError(f"active key {k.get('kid')} has no signing material in this process")
+        return jwt.encode(claims, key, algorithm=self.algorithm, headers={"kid": k["kid"]})
+
+    def _key_for(self, token: str) -> str:
+        if not self.keyring:
+            return self._verify_key
+        kid = jwt.get_unverified_header(token).get("kid")
+        if kid is None:
+            return self._verify_key  # tokens issued before the keyring was introduced
+        for k in self.keyring:
+            if k.get("kid") == kid:
+                return k.get("secret") if self.algorithm.startswith("HS") else k.get("public_key")
+        raise AuthenticationError(f"unknown or retired signing key '{kid}'")
 
     def issue(self, *, sub: str, tenant: str = "default", app: str = "default", roles: list[str] | None = None,
               groups: list[str] | None = None, scopes: list[str] | None = None, email: str | None = None,
@@ -123,7 +162,7 @@ class TokenService:
             claims["act"] = {"sub": actor}
         if extra:
             claims.update(extra)
-        return jwt.encode(claims, self._signing_key, algorithm=self.algorithm)
+        return self._sign(claims, "service" if sub.startswith("svc:") else "user")
 
     def issue_service_token(self, service: str, ttl: int = 3600) -> str:
         return self.issue(sub=f"svc:{service}", roles=["service"], ttl=ttl)
@@ -137,7 +176,7 @@ class TokenService:
         if iss != self.issuer:
             return self._verify_external(token, iss)
         try:
-            claims = jwt.decode(token, self._verify_key, algorithms=[self.algorithm], audience=self.audience,
+            claims = jwt.decode(token, self._key_for(token), algorithms=[self.algorithm], audience=self.audience,
                                 issuer=self.issuer, leeway=self.leeway)
         except jwt.ExpiredSignatureError as exc:
             raise AuthenticationError("token expired") from exc
@@ -199,7 +238,24 @@ def _env_token_service() -> TokenService:
         secret=secret, private_key=cfg.get("private_key") or resolve_secret("token_private_key"),
         public_key=cfg.get("public_key") or resolve_secret("token_public_key"),
         ttl_seconds=int(cfg.get("ttl_seconds", 900)), trusted_issuers=cfg.get("trusted_issuers", []),
+        keyring=load_keyring(),
     )
+
+
+def load_keyring() -> list[dict[str, Any]]:
+    """The rotation keyring: secret ``token_keyring`` (JSON list), written by ``aiready token rotate``."""
+    import json
+
+    from aiready.core.config import resolve_secret
+
+    raw = resolve_secret("token_keyring")
+    if not raw:
+        return []
+    try:
+        data = json.loads(raw)
+    except ValueError as exc:
+        raise ConfigError(f"token_keyring is not valid JSON: {exc}") from exc
+    return data if isinstance(data, list) else data.get("keys", [])
 
 
 _override: TokenService | None = None

@@ -8,6 +8,7 @@ live or bulk queue. ``GET /v1/embeddings/info`` returns each model's fingerprint
 """
 
 from __future__ import annotations
+from aiready.core.wiring import local as _local
 
 from typing import Any
 
@@ -24,7 +25,7 @@ def create_app(service: EmbeddingService | None = None) -> FastAPI:
 
     def svc() -> EmbeddingService:
         if "svc" not in holder:
-            holder["svc"] = service or EmbeddingService()
+            holder["svc"] = service or _local("embedding")
         return holder["svc"]
 
     async def shutdown() -> None:

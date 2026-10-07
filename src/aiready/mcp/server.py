@@ -15,7 +15,8 @@ from __future__ import annotations
 import contextlib
 import json
 import logging
-from typing import Any, AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable
+from typing import Any
 
 import mcp_types as types
 from mcp.server.lowlevel import Server

@@ -121,9 +121,11 @@ def test_session_exchange_via_bearer_or_identity_bridge(assistant, token_service
 
     def bridge(request: httpx.Request) -> httpx.Response:
         seen["cookie"] = request.headers.get("cookie")
+        assert request.url.path == "/v1/token"
         if "APPSESSION=good" not in (seen["cookie"] or ""):
             return httpx.Response(401)
-        return httpx.Response(200, json={"token": token_service.issue(sub="bob", app="claims", roles=["user"])})
+        return httpx.Response(200, json={"access_token": token_service.issue(sub="bob", app="claims", roles=["user"]),
+                                         "token_type": "Bearer", "expires_in": 900})
 
     assistant.cfg.identity_bridge.url = "https://bridge.test"
     assistant.cfg.identity_bridge.forward_cookies = ["APPSESSION"]

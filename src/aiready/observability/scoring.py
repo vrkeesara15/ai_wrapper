@@ -15,7 +15,7 @@ import json
 import logging
 import time
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -23,7 +23,7 @@ from pydantic import BaseModel, Field
 from aiready.core.identity import Principal
 from aiready.core.stores import DocStore, get_docstore
 from aiready.core.telemetry import SpanRecord, metrics, span
-from aiready.evals.scorers import Passage, Scorer, ScoreInput, ScoreResult, build_scorers
+from aiready.evals.scorers import Passage, ScoreInput, Scorer, ScoreResult, build_scorers
 from aiready.observability.config import ScoringConfig
 from aiready.observability.review import ReviewItem, ReviewQueue
 from aiready.observability.traces import attr, match_any, span_user
@@ -87,7 +87,7 @@ def extract_sample(spans: list[SpanRecord], answer_span_names: list[str]) -> Ans
     cand = cand or [s for s in spans if attr(s, "answer") is not None]
     if not cand:
         return None
-    s = sorted(cand, key=lambda x: x.start)[-1]
+    s = max(cand, key=lambda x: x.start)
     passages = []
     for i, p in enumerate(_as_list(attr(s, "passages"))):
         if isinstance(p, dict):
@@ -198,7 +198,7 @@ class LiveScorer:
         for r in self.records(since=since):
             if app and r.app != app or feature and r.feature != feature or model and r.model != model:
                 continue
-            b = datetime.fromtimestamp(r.ts, tz=timezone.utc).strftime(fmt)
+            b = datetime.fromtimestamp(r.ts, tz=UTC).strftime(fmt)
             acc[b]["overall"].append(r.overall)
             for k, v in r.scores.items():
                 acc[b][k].append(v)

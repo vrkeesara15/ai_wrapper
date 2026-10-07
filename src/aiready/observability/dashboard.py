@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import html
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 PALETTE = ["#2f6fdb", "#e0793a", "#3a9e6f", "#a259c9", "#c9a227", "#d64f6b", "#4bb0c9", "#7a7f87"]
@@ -126,7 +126,7 @@ var c=(!isNaN(nx)&&!isNaN(ny))?nx-ny:x.localeCompare(y);return asc?c:-c;});rows.
 
 def render_dashboard(data: dict[str, Any], title: str = "AI-Ready observability") -> str:
     cur = data.get("currency", "")
-    gen = datetime.fromtimestamp(data.get("generated_at", 0), tz=timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    gen = datetime.fromtimestamp(data.get("generated_at", 0), tz=UTC).strftime("%Y-%m-%d %H:%M UTC")
     feat = [(r["key"].get("feature", "-"), r["cost"]) for r in data.get("spend_by_feature", [])][:12]
     team = [(r["key"].get("team", "-"), r["cost"]) for r in data.get("spend_by_team", [])][:12]
     lat = [r for r in data.get("latency", []) if r.get("count")]
@@ -146,6 +146,7 @@ def render_dashboard(data: dict[str, Any], title: str = "AI-Ready observability"
     alert_html = ("".join(f'<p class="bad">&#9679; {_e(a.get("last", {}).get("rule", ""))}: {_e(a.get("last", {}).get("message", ""))}</p>'
                           for a in alerts) or '<p class="ok">No active alerts.</p>')
     causes = data.get("review_causes", {})
+    embedded = json.dumps(data, default=str).replace("</", "<\\/")  # safe inside <script>
     return f"""<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>{_e(title)}</title><style>{CSS}</style></head>
 <body><header><h1>{_e(title)}</h1><p>Last {_e(data.get("days"))} days &middot; generated {_e(gen)}</p></header>
@@ -164,5 +165,5 @@ def render_dashboard(data: dict[str, Any], title: str = "AI-Ready observability"
 <div class="card"><h2>Chargeback by team</h2>{team_table}</div>
 <div class="card"><h2>Alerts</h2>{alert_html}<h2>Review causes</h2>{_table(["cause", "count"], [[k, v] for k, v in sorted(causes.items())])}</div>
 </main>
-<script type="application/json" id="data">{json.dumps(data, default=str).replace("</", "<\\/")}</script>
+<script type="application/json" id="data">{embedded}</script>
 <script>{JS}</script></body></html>"""

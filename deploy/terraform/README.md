@@ -67,9 +67,9 @@ Node counts are never quoted before a load test: compute them with `aiready sizi
 ## Secrets
 
 `modules/secrets` creates `<name>/token_signing_key`, `<name>/audit_hmac_key`, `<name>/db_password`,
-`<name>/redis_auth_token` (generated) and `<name>/llm_api_key` (empty; filled out of band only if a public or
+`<name>/redis_auth_token`, `<name>/service_token_key`, `<name>/qdrant_api_key` (generated) and `<name>/llm_api_key` (empty; filled out of band only if a public or
 private-endpoint route is approved). External Secrets Operator (role output `irsa_role_arns.external_secrets`)
-syncs them into a Kubernetes Secret that the chart mounts at `/run/secrets/<name>`. Rotation writes new
+syncs them into a Kubernetes Secret that the chart mounts at `/run/secrets/<name>` (chart `secrets.mode=externalSecrets`, `remoteKeyPrefix: <name>/`; keys must match `secrets.keys`). Rotation writes new
 versions outside Terraform (`ignore_changes` on the value), see `docs/runbooks/rotate-signing-keys.md`.
 
 ## Notes and assumptions

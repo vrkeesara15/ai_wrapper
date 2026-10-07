@@ -14,7 +14,7 @@ import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 from aiready.agents.approvals import get_approval_store
 from aiready.agents.workflows import StepDef, WorkflowDef, evaluate, render
@@ -23,7 +23,7 @@ from aiready.core.errors import AIReadyError, ConfigError
 from aiready.core.identity import Principal
 from aiready.core.interfaces import QueryRequest, RagQuery
 from aiready.core.tokens import count_messages, count_tokens
-from aiready.core.types import ChatMessage, ChatRequest, ToolCall, ToolCallFunction, ToolSpec
+from aiready.core.types import ChatMessage, ChatRequest, ToolCall, ToolSpec
 from aiready.core.wiring import connect
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -59,8 +59,8 @@ class StepOutcome(BaseModel):
 
 @dataclass
 class StepContext:
-    runtime: "AgentRuntime"
-    run: "RunState"
+    runtime: AgentRuntime
+    run: RunState
     step: StepDef
     workflow: WorkflowDef
     principal: Principal

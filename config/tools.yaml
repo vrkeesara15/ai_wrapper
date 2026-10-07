@@ -1,0 +1,72 @@
+# =====================================================================================================
+# MCP server / tool executor (package aiready.mcp, port 8140, wiring name `tools`)
+#
+# Wraps the application's existing APIs as typed tools. Every call:
+#   * is validated against the tool's JSON schema,
+#   * is checked by the policy engine (action tool.call; resource: tool name, effect, data class),
+#   * runs with the signed-in user's own token (no shared service account),
+#   * waits for a person when its effect is write, payment or delete (see `approvals` in agents.yaml),
+#   * is audited (arguments hash, effect, decision) and traced.
+# MCP clients connect to  http://<host>:8140/mcp  (Streamable HTTP) with the user's bearer token.
+# =====================================================================================================
+tools:
+
+  # OpenAPI documents whose operations become tools - one tool per operation. Normally the API facade
+  # (aiready.integration, port 8151), which already declares effect / roles / data class per endpoint.
+  sources:
+    - name: facade
+      spec_url: ${AIREADY_FACADE_URL:-http://localhost:8151}/openapi.json
+      base_url: ${AIREADY_FACADE_URL:-http://localhost:8151}
+      # spec_path: config/openapi/facade.yaml      # or a local file
+      # spec: {...}                                # or inline
+      include: []                 # globs over tool name, operationId, "METHOD /path" or tag:<tag>; empty = all
+      exclude: ["tag:internal", "tag:admin"]
+      prefix: ""                  # e.g. "crm_" when several APIs are exposed
+      timeout_seconds: 30
+      data_class: internal        # default when the spec has no x-aiready-data-class
+      required_roles: []          # default when the spec has no x-aiready-required-roles
+
+  # Tools declared by hand when no OpenAPI document exists. Arguments go to {placeholders} in the path,
+  # then to the query string (GET/DELETE) or the JSON body (other methods).
+  http_tools: []
+  #  - name: get_exchange_rate
+  #    description: Current exchange rate between two currencies.
+  #    method: GET
+  #    url: https://rates.internal/v1/rate
+  #    input_schema:
+  #      type: object
+  #      required: [from, to]
+  #      properties: {from: {type: string}, to: {type: string}}
+  #    effect: read
+  #    required_roles: [finance]
+
+  # Built-in tools backed by other AI-Ready services (through wiring, with the user's identity).
+  builtins:
+    search_knowledge: {enabled: true}        # RAG: grounded answer with citations, or raw passages
+    query_data: {enabled: true}              # governed read-only SQL / approved metrics
+    recall: {enabled: true}                  # the user's stored facts and preferences
+    remember:
+      enabled: true
+      effect: write                          # a memory write waits for confirmation; set `read` to allow freely
+
+  # Client-specific tools, no fork needed: any class exposing `definition: ToolDefinition` and
+  # `async invoke(arguments, principal)`.
+  custom: []
+  #  - class: acme_ai.tools:PricingTool
+  #    region: eu
+
+  # Per-tool overrides (by tool name or operationId): effect (read|write|payment|delete), required_roles,
+  # data_class, description, timeout_seconds, enabled.
+  overrides: {}
+  #  pay_claim: {effect: payment, required_roles: [claims-lead]}
+  #  delete_attachment: {enabled: false}
+
+  default_timeout_seconds: 30
+  max_result_bytes: 65536                    # larger results are truncated before they reach a model
+  forward_user_token: true                   # keep true: the facade must see the signed-in user
+  approval_header: X-AIReady-Approval        # sent to the facade with the id of an approved call
+  retry_failed_sources_seconds: 60           # a source that failed to load is retried after this long
+  http_retries: 0                            # extra attempts for READ tools only; writes are never retried
+  cors_allowed_origins: ["http://localhost:8000"]   # app pages using the WebMCP add-on (web/webmcp)
+  mcp_path: /mcp
+  mcp_server_name: aiready

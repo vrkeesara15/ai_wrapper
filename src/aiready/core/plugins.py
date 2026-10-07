@@ -62,6 +62,8 @@ _BUILTIN_MODULES: dict[str, list[str]] = {
     "rag_context_builder": ["aiready.rag.context"],
     "rag_citation_mapper": ["aiready.rag.citations"],
     "rag_grounding": ["aiready.rag.grounding"],
+    "tool": ["aiready.mcp.registry"],
+    "agent_step": ["aiready.agents.steps"],
 }
 
 

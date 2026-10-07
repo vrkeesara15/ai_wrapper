@@ -20,7 +20,7 @@ def _rpc(client: TestClient, token: str, method: str, params: dict, rid: int = 1
 def test_mcp_list_tools_is_filtered_by_caller_roles(tool_service, facade):
     analyst = make_principal("alice", roles=["analyst"])
     handler = make_principal("hank", roles=["claims-handler"])
-    with TestClient(create_app()) as client:
+    with TestClient(create_app(tool_service)) as client:
         init = _rpc(client, analyst.token, "initialize", {
             "protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "test", "version": "1"}})
         assert init["result"]["serverInfo"]["name"] == "aiready"
@@ -35,7 +35,7 @@ def test_mcp_list_tools_is_filtered_by_caller_roles(tool_service, facade):
 def test_mcp_call_tool_acts_as_the_bearer_and_gates_writes(tool_service, facade):
     alice = make_principal("alice", roles=["analyst"])
     bob = make_principal("bob", roles=["approver"])
-    with TestClient(create_app()) as client:
+    with TestClient(create_app(tool_service)) as client:
         res = _rpc(client, alice.token, "tools/call", {"name": "getClaim", "arguments": {"claim_id": "C9"}})["result"]
         assert res["isError"] is False and res["structuredContent"]["path"] == "/api/claims/C9"
         assert facade.requests[-1].headers["authorization"] == f"Bearer {alice.token}"
@@ -54,7 +54,7 @@ def test_mcp_call_tool_acts_as_the_bearer_and_gates_writes(tool_service, facade)
 
 
 def test_mcp_requires_a_user_token(tool_service):
-    with TestClient(create_app()) as client:
+    with TestClient(create_app(tool_service)) as client:
         r = client.post("/mcp", headers=MCP_HEADERS, json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
         assert r.status_code == 401
 
@@ -62,7 +62,7 @@ def test_mcp_requires_a_user_token(tool_service):
 def test_rest_surface_and_webmcp_manifest(tool_service, facade):
     alice = make_principal("alice", roles=["analyst"])
     h = {"Authorization": f"Bearer {alice.token}"}
-    with TestClient(create_app()) as client:
+    with TestClient(create_app(tool_service)) as client:
         manifest = client.get("/v1/tools?format=webmcp", headers=h).json()
         tools = {t["name"]: t for t in manifest["tools"]}
         assert tools["getClaim"]["annotations"]["readOnlyHint"] is True and "inputSchema" in tools["getClaim"]
@@ -72,3 +72,23 @@ def test_rest_surface_and_webmcp_manifest(tool_service, facade):
         r = client.post("/v1/tools/deleteClaim:call", headers=h, json={"arguments": {"claim_id": "A"}})
         assert r.status_code == 202 and r.json()["approval_id"]
         assert client.get("/v1/tools").status_code == 401
+
+
+def test_own_service_url_in_config_does_not_loop_back(tool_service, facade):
+    """In Kubernetes services.tools.url is set even inside the MCP pod: the app must use its own executor."""
+    from aiready.core import wiring
+    from aiready.core.config import ConfigStore, set_config
+
+    set_config(ConfigStore(tree={"state": {"url": "sqlite:///:memory:"},
+                                 "services": {"tools": {"url": "http://mcp:8140"}}}))
+    wiring.reset()
+    from aiready.testing import AllowAllPolicy
+
+    wiring.override("policy", AllowAllPolicy())
+    alice = make_principal("alice", roles=["analyst"])
+    with TestClient(create_app(tool_service)) as client:
+        r = client.post("/v1/tools/getClaim:call", headers={"Authorization": f"Bearer {alice.token}"},
+                        json={"arguments": {"claim_id": "K1"}})
+        assert r.status_code == 200 and r.json()["ok"] is True
+        tools = _rpc(client, alice.token, "tools/list", {})["result"]["tools"]
+        assert "getClaim" in {t["name"] for t in tools}

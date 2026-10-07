@@ -1,0 +1,19 @@
+policy_tests:
+  - name: ingestion service may read sources
+    input: {action: data.ingest, principal: {sub: "svc:ingestion", roles: [ingestion]}, context: {data_class: internal}}
+    expect: allow
+  - name: an ordinary user may not trigger source reads
+    input: {action: data.ingest, principal: {sub: alice, roles: [user]}}
+    expect: deny
+  - name: injected document is refused
+    input: {action: data.index, principal: {sub: "svc:ingestion", roles: [ingestion]},
+            context: {access_tags: [g1], injection_suspected: true, data_class: internal}}
+    expect: deny
+  - name: unmasked personal data is refused
+    input: {action: data.index, principal: {sub: "svc:ingestion", roles: [ingestion]},
+            context: {access_tags: [g1], personal_data: true, pii_masked: false, data_class: personal}}
+    expect: deny
+  - name: tagged internal document is indexed
+    input: {action: data.index, principal: {sub: "svc:ingestion", roles: [ingestion]},
+            context: {access_tags: [g1], personal_data: false, pii_masked: false, data_class: internal}}
+    expect: allow

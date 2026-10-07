@@ -34,14 +34,15 @@ observability:
     first_token: 800
     check: 500
 
-  # Span-name globs per budget stage (first match wins). first_token / model_start come from the
-  # ttft_ms / model_start_ms span attributes.
+  # Span-name globs per budget stage (first match wins). Convention: one "<service>.stage.<stage>" span per
+  # stage (the RAG service emits rag.stage.screen ... rag.stage.check), so nested child spans are not counted
+  # twice. first_token / model_start come from the ttft_ms / model_start_ms span attributes.
   stage_map:
-    screen: ["guardrails.screen*", "*.screen_input", "*.screen"]
-    embed: ["embedding.*", "*.embed", "*.embed_query"]
-    search: ["search.search", "search.hybrid", "*.search", "*.hybrid_search"]
-    rerank: ["rerank.*", "*.rerank"]
-    check: ["*.verify", "*.grounding*", "guardrails.validate*", "*.check"]
+    screen: ["*.stage.screen", "gateway.screen"]
+    embed: ["*.stage.embed"]
+    search: ["*.stage.search"]
+    rerank: ["*.stage.rerank"]
+    check: ["*.stage.check"]
 
   # Cost: spans carrying `cost` win; otherwise priced here (per 1k tokens, plus a fixed per-request part).
   # Price self-hosted models at an internal rate so chargeback covers them too. "*" = any other model.
@@ -97,7 +98,7 @@ observability:
   # Users always see their own traces. These roles see all traces of their tenant / may replay / work the
   # review queue / see cost, latency and quality reports.
   access:
-    viewer_roles: [admin, ops, auditor]
-    replay_roles: [admin]
-    reviewer_roles: [admin, reviewer, ai-engineer]
-    report_roles: [admin, ops, finance]
+    viewer_roles: [admin, platform-admin, security-admin, ops, auditor]
+    replay_roles: [admin, platform-admin]
+    reviewer_roles: [admin, platform-admin, reviewer, ai-engineer]
+    report_roles: [admin, platform-admin, ops, finance]

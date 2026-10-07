@@ -7,6 +7,7 @@ pipelines screening documents). Unmasking requires a signed-in user with an unma
 """
 
 from __future__ import annotations
+from aiready.core.wiring import local as _local
 
 from typing import Any
 
@@ -49,7 +50,7 @@ class UnmaskBody(BaseModel):
 
 
 def create_app(service: GuardrailService | None = None) -> FastAPI:
-    svc = service or GuardrailService.from_config()
+    svc = service or _local("guardrails")
     app = create_service_app("guardrails", readiness=lambda: {"detectors": sorted(svc.cfg.detectors)})
     app.state.guardrails = svc
 

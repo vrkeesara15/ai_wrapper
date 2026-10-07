@@ -37,6 +37,7 @@ class BaseModelPin(BaseModel):
     revision: str  # commit sha / digest - never "main" or "latest"
     served_name: str | None = None  # name of the base route in the gateway
     license: str | None = None
+    registry_version: str | None = None  # version of the model record in the model registry, when there is one
 
 
 class GpuPoolConfig(BaseModel):

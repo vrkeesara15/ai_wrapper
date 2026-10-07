@@ -15,13 +15,15 @@ DEFAULT_LATENCY_BUDGET_MS: dict[str, float] = {
     "screen": 50, "embed": 30, "search": 70, "rerank": 150, "model_start": 500, "first_token": 800, "check": 500,
 }
 
-#: Span-name globs mapped to budget stages. First match wins. Clients add their own span names here.
+#: Span-name globs mapped to budget stages. First match wins. The convention is one ``<service>.stage.<stage>``
+#: span per budget stage (the RAG service emits ``rag.stage.screen`` ... ``rag.stage.check``); matching only
+#: those avoids counting a stage twice through its nested child spans. Clients add their own span names here.
 DEFAULT_STAGE_MAP: dict[str, list[str]] = {
-    "screen": ["guardrails.screen*", "*.screen_input", "*.screen"],
-    "embed": ["embedding.*", "*.embed", "*.embed_query"],
-    "search": ["search.search", "search.hybrid", "*.search", "*.hybrid_search"],
-    "rerank": ["rerank.*", "*.rerank"],
-    "check": ["*.verify", "*.grounding*", "guardrails.validate*", "*.check"],
+    "screen": ["*.stage.screen", "gateway.screen"],
+    "embed": ["*.stage.embed"],
+    "search": ["*.stage.search"],
+    "rerank": ["*.stage.rerank"],
+    "check": ["*.stage.check"],
 }
 
 
@@ -104,10 +106,10 @@ class AlertsConfig(BaseModel):
 class AccessConfig(BaseModel):
     """Who may see what. Users always see their own traces; these roles see everything in their tenant."""
 
-    viewer_roles: list[str] = Field(default_factory=lambda: ["admin", "ops", "auditor"])
-    replay_roles: list[str] = Field(default_factory=lambda: ["admin"])
-    reviewer_roles: list[str] = Field(default_factory=lambda: ["admin", "reviewer", "ai-engineer"])
-    report_roles: list[str] = Field(default_factory=lambda: ["admin", "ops", "finance"])
+    viewer_roles: list[str] = Field(default_factory=lambda: ["admin", "platform-admin", "security-admin", "ops", "auditor"])
+    replay_roles: list[str] = Field(default_factory=lambda: ["admin", "platform-admin"])
+    reviewer_roles: list[str] = Field(default_factory=lambda: ["admin", "platform-admin", "reviewer", "ai-engineer"])
+    report_roles: list[str] = Field(default_factory=lambda: ["admin", "platform-admin", "ops", "finance"])
 
 
 class ObservabilityConfig(BaseModel):

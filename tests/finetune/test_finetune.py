@@ -1,5 +1,5 @@
 import os
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 import yaml
@@ -201,7 +201,7 @@ async def test_job_spec_targets_offpeak_pool_and_never_mounts_heldout(tmp_path, 
 
 def test_off_peak_windows():
     w = ["Mon-Fri 20:00-06:00", "Sat-Sun 00:00-24:00"]
-    utc = timezone.utc
+    utc = UTC
     assert is_off_peak(datetime(2026, 10, 7, 21, 0, tzinfo=utc), w)  # Wednesday night
     assert not is_off_peak(datetime(2026, 10, 7, 12, 0, tzinfo=utc), w)  # Wednesday noon
     assert is_off_peak(datetime(2026, 10, 8, 5, 30, tzinfo=utc), w)  # Thursday early morning
@@ -308,5 +308,5 @@ async def test_gate_runs_safety_suites_on_adapter(builder_principal):
 
 
 def test_longest_common_run():
-    assert longest_common_run("a b c d e".split(), "x b c d y".split()) == 3
+    assert longest_common_run(["a", "b", "c", "d", "e"], ["x", "b", "c", "d", "y"]) == 3
     assert longest_common_run([], ["a"]) == 0

@@ -34,7 +34,7 @@ class FeedbackIn(BaseModel):
     feature: str | None = None
 
     @model_validator(mode="after")
-    def _something(self) -> "FeedbackIn":
+    def _something(self) -> FeedbackIn:
         if self.thumbs is None and self.rating is None and not self.edit and not self.comment:
             raise ValueError("feedback needs thumbs, rating, edit or comment")
         return self

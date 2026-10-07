@@ -4,6 +4,7 @@
 """
 
 from __future__ import annotations
+from aiready.core.wiring import local as _local
 
 from typing import Any
 
@@ -18,11 +19,12 @@ from aiready.observability.dashboard import render_dashboard
 from aiready.observability.exports import grafana_dashboard, prometheus_rules
 from aiready.observability.feedback import FeedbackIn
 from aiready.observability.review import ReviewItem, ReviewLabel
+from aiready.observability.scoring import AnswerSample
 from aiready.observability.service import ObservabilityService
 
 
 def create_app(service: ObservabilityService | None = None) -> FastAPI:
-    svc = service or ObservabilityService.from_config()
+    svc = service or _local("observability")
     app = create_service_app("observability", on_startup=[svc.start], on_shutdown=[svc.stop],
                              readiness=lambda: {"review_queue": svc.review.size()})
     app.state.service = svc
@@ -42,6 +44,12 @@ def create_app(service: ObservabilityService | None = None) -> FastAPI:
                      p: Principal | None = Depends(ingest_principal)) -> dict[str, Any]:
         batch = spans.get("spans", []) if isinstance(spans, dict) else spans
         return await svc.ingest(batch, p)
+
+    @app.post("/v1/answers")
+    async def answers(sample: AnswerSample, force: bool = False,
+                      p: Principal | None = Depends(ingest_principal)) -> dict[str, Any]:
+        rec = await svc.submit_answer(sample, p, force=force)
+        return {"scored": rec is not None, "score": rec.model_dump() if rec else None}
 
     @app.get("/v1/traces")
     async def traces(app_: str | None = Query(None, alias="app"), feature: str | None = None, user: str | None = None,

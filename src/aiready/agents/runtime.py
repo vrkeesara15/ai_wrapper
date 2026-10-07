@@ -24,7 +24,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from typing import Any, AsyncIterator
+from collections.abc import AsyncIterator
+from typing import Any
 
 from aiready.agents.approvals import ApprovalRequest, get_approval_store
 from aiready.agents.config import AgentsConfig
@@ -33,8 +34,15 @@ from aiready.agents.steps import StepContext, StepFailed, StepOutcome, step_hand
 from aiready.agents.store import EventBus, RunStore, clip
 from aiready.agents.workflows import WorkflowDef, WorkflowRegistry
 from aiready.core.audit import get_audit
-from aiready.core.errors import (AIReadyError, AuthenticationError, NotFound, PermissionDenied, PolicyViolation,
-                                 UpstreamError, ValidationFailed)
+from aiready.core.errors import (
+    AIReadyError,
+    AuthenticationError,
+    NotFound,
+    PermissionDenied,
+    PolicyViolation,
+    UpstreamError,
+    ValidationFailed,
+)
 from aiready.core.identity import Principal, get_token_service
 from aiready.core.interfaces import PolicyInput
 from aiready.core.queues import Queue, make_queue
@@ -223,7 +231,7 @@ class AgentRuntime:
                     return
                 try:
                     carry = await asyncio.wait_for(q.get(), timeout=self.cfg.event_poll_seconds)
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     continue
         finally:
             self.bus.unsubscribe(run_id, q)
@@ -468,7 +476,7 @@ class AgentRuntime:
                     metrics.time_stage(SERVICE, f"step.{step.type_name}"):
                 try:
                     outcome = await asyncio.wait_for(handler.run(ctx), timeout=timeout)
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     last_error, retryable = f"timed out after {timeout:.1f}s", False
                 except StepFailed as exc:
                     last_error, retryable = exc.message, exc.retryable

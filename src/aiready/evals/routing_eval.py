@@ -10,7 +10,8 @@ The output is a YAML snippet for the gateway routing configuration - a routing c
 
 from __future__ import annotations
 
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 import yaml
 from pydantic import BaseModel, Field

@@ -17,7 +17,8 @@ import inspect
 import json
 import re
 import time
-from typing import Any, Callable, Protocol
+from collections.abc import Callable
+from typing import Any, Protocol
 
 from pydantic import BaseModel, Field
 
@@ -72,8 +73,8 @@ def _passages_from_hits(hits: list[Any]) -> list[Passage]:
     out = []
     for i, h in enumerate(hits):
         ch = h.chunk if hasattr(h, "chunk") else (h.get("chunk", h) if isinstance(h, dict) else h)
-        get = (lambda k: getattr(ch, k, None)) if not isinstance(ch, dict) else ch.get
-        out.append(Passage(id=str(get("id") or ""), doc_id=str(get("doc_id") or ""), text=str(get("text") or ""),
+        d = ch if isinstance(ch, dict) else {k: getattr(ch, k, None) for k in ("id", "doc_id", "text")}
+        out.append(Passage(id=str(d.get("id") or ""), doc_id=str(d.get("doc_id") or ""), text=str(d.get("text") or ""),
                            marker=str(i + 1)))
     return out
 
@@ -191,12 +192,15 @@ def _output_from_mapping(data: Any, *, answer_path: str = "answer", citations_pa
 
 @register("eval_target", "agents")
 class AgentsTarget:
-    """Runs an agent workflow. The agent runtime's method is called duck-typed (``method``), with the case
-    question as input, so the runner does not depend on the runtime's internal types."""
+    """Runs an agent workflow: ``connect("agents").start_run(workflow, {"question": ...}, principal)`` and reads
+    the answer from the returned run view (``result.answer``). Called duck-typed (``method``) so the runner does
+    not depend on the runtime's internal types. A run that stops for a human approval is reported as such -
+    the evaluation never approves a write on anyone's behalf."""
 
     name = "agents"
 
-    def __init__(self, workflow: str, method: str = "run", input_key: str = "question", answer_path: str = "answer"):
+    def __init__(self, workflow: str | None = None, method: str = "start_run", input_key: str = "question",
+                 answer_path: str = "result.answer"):
         self.workflow, self.method, self.input_key, self.answer_path = workflow, method, input_key, answer_path
 
     async def run(self, case: EvalCase, principal: Principal) -> TargetOutput:
@@ -210,7 +214,13 @@ class AgentsTarget:
         if inspect.isawaitable(res):
             res = await res
         data = res.model_dump() if hasattr(res, "model_dump") else res
-        return _output_from_mapping(data, answer_path=self.answer_path)
+        if isinstance(data, dict) and data.get("status") in ("waiting_approval", "waiting_child", "waiting_user"):
+            return TargetOutput(answer=f"[run {data.get('id')} waiting for approval]", trace_id=data.get("trace_id"))
+        out = _output_from_mapping(data, answer_path=self.answer_path)
+        if not out.answer and isinstance(data, dict) and isinstance(data.get("result"), dict):
+            out = _output_from_mapping(data["result"])
+        out.trace_id = out.trace_id or (data.get("trace_id") if isinstance(data, dict) else None)
+        return out
 
 
 @register("eval_target", "http")

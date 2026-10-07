@@ -19,6 +19,11 @@ class ObservabilityClient:
     async def ingest(self, spans: list[SpanRecord], principal: Principal | None = None) -> dict[str, Any]:
         return await self.http.json("POST", "/v1/spans", principal=principal, json=[s.model_dump() for s in spans])
 
+    async def submit_answer(self, sample: Any, principal: Principal | None = None, *, force: bool = False) -> Any:
+        body = sample.model_dump() if hasattr(sample, "model_dump") else sample
+        return await self.http.json("POST", "/v1/answers", principal=principal, json=body,
+                                    params={"force": str(force).lower()})
+
     async def record_feedback(self, fb: FeedbackIn, principal: Principal) -> FeedbackRecord:
         return FeedbackRecord.model_validate(await self.http.json("POST", "/v1/feedback", principal=principal,
                                                                   json=fb.model_dump()))

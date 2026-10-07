@@ -6,7 +6,8 @@ callers work the same whether the runtime is in-process (pilot) or a separate po
 
 from __future__ import annotations
 
-from typing import Any, AsyncIterator
+from collections.abc import AsyncIterator
+from typing import Any
 
 from aiready.agents.approvals import ApprovalRequest, get_approval_store
 from aiready.agents.config import AgentsConfig
@@ -25,6 +26,11 @@ class AgentService:
         self.runtime = runtime
         if watch_config:
             get_config().subscribe(self._on_config)
+
+    @classmethod
+    def from_config(cls) -> "AgentService":
+        """The in-process service built from the ``agents`` / ``workflows`` configuration sections."""
+        return cls()
 
     def _on_config(self, tree: dict[str, Any]) -> None:
         """New workflow versions and limits apply to new runs; running runs keep their snapshot."""

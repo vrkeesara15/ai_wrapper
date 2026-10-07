@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import pytest
+from agents_fixtures import WORKFLOWS
 
 from aiready.agents.approvals import get_approval_store
 from aiready.agents.runtime import AgentRuntime
@@ -8,8 +9,6 @@ from aiready.agents.workflows import WorkflowRegistry
 from aiready.core.audit import get_audit
 from aiready.core.errors import PermissionDenied, UpstreamError, ValidationFailed
 from aiready.testing import make_principal
-
-from agents_fixtures import WORKFLOWS
 
 
 def _steps(events):
@@ -172,7 +171,9 @@ async def test_expired_token_waits_for_the_user_instead_of_a_service_identity(ma
     await rt.resume(run.id, alice)  # the user comes back with a fresh token
     await rt.drain()
     assert rt.store.get(run.id).status == "completed"
-    with pytest.raises(Exception):
+    from aiready.core.errors import NotFound
+
+    with pytest.raises(NotFound):
         await rt.resume(run.id, make_principal("mallory"))
 
 

@@ -13,8 +13,9 @@ import io
 import math
 import time
 from collections import defaultdict
-from datetime import datetime, timezone
-from typing import Any, Iterable
+from collections.abc import Iterable
+from datetime import UTC, datetime
+from typing import Any
 
 from pydantic import BaseModel
 
@@ -43,7 +44,7 @@ class UsageRecord(BaseModel):
 
     @property
     def day(self) -> str:
-        return datetime.fromtimestamp(self.ts, tz=timezone.utc).strftime("%Y-%m-%d")
+        return datetime.fromtimestamp(self.ts, tz=UTC).strftime("%Y-%m-%d")
 
     def dim(self, name: str) -> str:
         return self.day if name == "day" else str(getattr(self, name))
@@ -115,12 +116,14 @@ def usage_records(spans: Iterable[SpanRecord], *, pricing: dict[str, ModelPrice]
         model = str(attr(s, "model", default="-"))
         team = str(attr(s, "team", default=ctx.get("team") or resolve_team(app, feature, teams)))
         pt_i, ct_i = int(pt or 0), int(ct or 0)
-        hit = attr(s, "cache_hit")
+        hit = attr(s, "cache_hit", "cached")
+        lat = attr(s, "latency_ms")  # the gateway records end-to-end latency on its short "record" span
         out.append(UsageRecord(
             ts=s.start, trace_id=s.trace_id, span=s.name, app=app, feature=feature, team=team, model=model,
             user=span_user(s) or ctx.get("user", "-"), prompt_tokens=pt_i, completion_tokens=ct_i,
             cost=float(cost) if cost is not None else compute_cost(model, pt_i, ct_i, pricing),
-            latency_ms=s.duration_ms, error=s.status == "error", cache_hit=bool(hit) if hit is not None else None,
+            latency_ms=float(lat) if isinstance(lat, (int, float)) else s.duration_ms,
+            error=s.status == "error" or bool(attr(s, "error")), cache_hit=bool(hit) if hit is not None else None,
         ))
     return out
 
@@ -189,10 +192,10 @@ class ChargebackReport(BaseModel):
 def month_bounds(period: str | None = None) -> tuple[str, float, float]:
     """``YYYY-MM`` -> (period, first second, last second) in UTC; default the current month."""
     if not period:
-        period = datetime.now(timezone.utc).strftime("%Y-%m")
+        period = datetime.now(UTC).strftime("%Y-%m")
     year, month = (int(x) for x in period.split("-"))
-    start = datetime(year, month, 1, tzinfo=timezone.utc)
-    end = datetime(year + (month == 12), month % 12 + 1, 1, tzinfo=timezone.utc)
+    start = datetime(year, month, 1, tzinfo=UTC)
+    end = datetime(year + (month == 12), month % 12 + 1, 1, tzinfo=UTC)
     return period, start.timestamp(), end.timestamp() - 1e-6
 
 
@@ -281,8 +284,12 @@ def cache_hit_rate(records: list[UsageRecord], spans: Iterable[SpanRecord] = ())
     vals = [r.cache_hit for r in records if r.cache_hit is not None]
     seen = {(r.trace_id, r.span) for r in records}
     for s in spans:
+        if (s.trace_id, s.name) in seen:
+            continue
         hit = attr(s, "cache_hit")
-        if hit is not None and (s.trace_id, s.name) not in seen:
+        if hit is None and s.name.endswith(".reuse") and attr(s, "hit") is not None:
+            hit = attr(s, "hit") not in ("miss", False, None)  # gateway reuse step: hit=<exact|semantic>|miss
+        if hit is not None:
             vals.append(bool(hit))
     return round(sum(vals) / len(vals), 4) if vals else None
 

@@ -9,6 +9,7 @@
 """
 
 from __future__ import annotations
+from aiready.core.wiring import local as _local
 
 import json
 import logging
@@ -35,7 +36,7 @@ def create_app(service: Any | None = None) -> FastAPI:
         if holder["svc"] is None:
             from aiready.rag.service import RagServiceImpl
 
-            holder["svc"] = RagServiceImpl.from_config()
+            holder["svc"] = _local("rag")
         return holder["svc"]
 
     app = create_service_app("rag", title="AI-Ready RAG service")

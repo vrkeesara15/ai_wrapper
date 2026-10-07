@@ -32,7 +32,7 @@ def request_trace(trace="t1", user="alice", feature="claims-qa", team=None, cost
     if answer is not None:
         root_attrs.update(answer=answer, question="How long to report a claim?", passages=passages or [], found=True)
     spans = [mk(trace, f"{trace}-root", "rag.answer", start=start, dur=1.2, **root_attrs),
-             mk(trace, f"{trace}-scr", "guardrails.screen_input", parent=f"{trace}-root", start=start, dur=0.04),
+             mk(trace, f"{trace}-scr", "rag.stage.screen", parent=f"{trace}-root", start=start, dur=0.04),
              mk(trace, f"{trace}-gw", "gateway.chat", parent=f"{trace}-root", start=start + 0.3, dur=0.8, status=status,
                 model=model, prompt_tokens=pt, completion_tokens=ct, ttft_ms=650,
                 request={"model": "auto", "messages": [{"role": "user", "content": "How long to report a claim?"}]},
@@ -122,7 +122,7 @@ async def test_trace_tree_and_access(svc, admin):
     alice = testing.make_principal("alice")
     tree = await svc.get_trace("t1", alice)
     assert len(tree.roots) == 1 and tree.roots[0].span.name == "rag.answer"
-    assert {c.span.name for c in tree.roots[0].children} == {"guardrails.screen_input", "gateway.chat"}
+    assert {c.span.name for c in tree.roots[0].children} == {"rag.stage.screen", "gateway.chat"}
     assert tree.summary.user == "alice" and tree.summary.feature == "claims-qa"
     with pytest.raises(NotFound):
         await svc.get_trace("t1", testing.make_principal("mallory"))
@@ -190,7 +190,7 @@ async def test_latency_against_budget(svc, admin):
     rows = {r.stage: r for r in await svc.latency(admin)}
     assert rows["screen"].budget_ms == 50 and rows["screen"].within_budget is True
     assert rows["first_token"].p95_ms == 650 and rows["first_token"].within_budget is True
-    await svc.ingest([mk("t9", "x", "guardrails.screen_input", dur=0.2)])
+    await svc.ingest([mk("t9", "x", "rag.stage.screen", dur=0.2)])
     rows = {r.stage: r for r in await svc.latency(admin)}
     assert rows["screen"].within_budget is False and rows["screen"].over_budget_share == 0.5
 

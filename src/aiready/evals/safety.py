@@ -12,12 +12,15 @@ strings that identify the other user's data).
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 from aiready.core.identity import Principal
 from aiready.evals.golden import EvalSuite, load_suites, suites_from_config
 from aiready.evals.runner import EvalRunner, Scorecard
 from aiready.evals.targets import Target
+
+log = logging.getLogger(__name__)
 
 
 def safety_dirs() -> list[Path]:
@@ -30,8 +33,8 @@ def safety_dirs() -> list[Path]:
         if cfg.get("evals.safety_dir"):
             dirs.append(Path(cfg.get("evals.safety_dir")))
         dirs.append(cfg.config_dir / "evals" / "safety")
-    except Exception:
-        pass
+    except Exception as exc:  # no configuration loaded (library use): fall back to the repository copy
+        log.debug("no configured safety dir: %s", exc)
     dirs.append(Path(__file__).resolve().parents[3] / "config" / "evals" / "safety")
     return dirs
 

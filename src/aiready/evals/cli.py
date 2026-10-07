@@ -14,7 +14,7 @@ from __future__ import annotations
 import asyncio
 import json
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 import typer
 import yaml
@@ -92,9 +92,9 @@ def validate(paths: list[Path]) -> None:
 
 
 @evals_app.command()
-def run(suites: list[str], release: str = typer.Option(...), target: Optional[str] = None,
+def run(suites: list[str], release: str = typer.Option(...), target: str | None = None,
         option: list[str] = typer.Option([], "--option", "-o", help="target option key=value"),
-        concurrency: Optional[int] = None, safety: bool = False) -> None:
+        concurrency: int | None = None, safety: bool = False) -> None:
     """Run suites (config names or files) and write scorecards."""
     cards = asyncio.run(run_suites(_suites(suites, safety), release=release, target=target, options=option,
                                    concurrency=concurrency))
@@ -103,8 +103,8 @@ def run(suites: list[str], release: str = typer.Option(...), target: Optional[st
 
 
 @evals_app.command()
-def gate(suites: list[str], release: str = typer.Option(...), baseline: str = "latest", target: Optional[str] = None,
-         option: list[str] = typer.Option([], "--option", "-o"), concurrency: Optional[int] = None,
+def gate(suites: list[str], release: str = typer.Option(...), baseline: str = "latest", target: str | None = None,
+         option: list[str] = typer.Option([], "--option", "-o"), concurrency: int | None = None,
          safety: bool = typer.Option(True, help="also run the built-in safety suites")) -> None:
     """Run suites, compare with the baseline and exit non-zero when the release is blocked."""
     code = asyncio.run(gate_release(_suites(suites, safety), release=release, baseline=baseline, target=target,
@@ -120,7 +120,7 @@ def trend(suite: str) -> None:
 
 @evals_app.command()
 def routing(task: list[str] = typer.Option(..., help="task=suite"), model: list[str] = typer.Option(..., help="name:size"),
-            release: str = "routing-eval", out: Optional[Path] = None) -> None:
+            release: str = "routing-eval", out: Path | None = None) -> None:
     """Evaluate candidate models per task and print the gateway routing snippet."""
     from aiready.evals.routing_eval import ModelCandidate, evaluate_routes
 

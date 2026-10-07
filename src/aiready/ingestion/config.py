@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import model_validator, BaseModel, Field
 
 from aiready.core.types import DataClass
 
@@ -27,6 +27,10 @@ class SourceConfig(BaseModel):
     name: str
     connector: dict[str, Any]  # plugin spec: {type: filesystem, root: ...} or {class: pkg.mod:Cls, ...}
     collection: str = "default"
+    # When set, the source is indexed into the physical collection <collection>__<app>__<tenant> - the same
+    # name the search service enforces per tenant and the RAG service queries for that app's users.
+    app: str | None = None
+    tenant: str = "default"
     enabled: bool = True
     schedule: str | None = None  # "every 15m", "interval:1h", "@daily", or a 5-field cron expression
     chunker: dict[str, Any] | None = None  # overrides ingestion.chunking.default for this source
@@ -38,6 +42,14 @@ class SourceConfig(BaseModel):
     max_delete_fraction: float = 0.5  # refuse to delete more than this share of a source in one run (outage guard)
     landing: bool = True  # keep raw copies for replay
     verify: list[VerifyQuestion] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _physical_collection(self) -> "SourceConfig":
+        if self.app and "__" not in self.collection:
+            from aiready.search.service import collection_name
+
+            self.collection = collection_name(self.app, self.tenant, self.collection)
+        return self
 
 
 class ChunkingConfig(BaseModel):

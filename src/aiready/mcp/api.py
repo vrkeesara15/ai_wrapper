@@ -10,6 +10,7 @@ Run: ``uvicorn aiready.mcp.api:create_app --factory --port 8140``
 """
 
 from __future__ import annotations
+from aiready.core.wiring import local as _local
 
 from typing import Any, Literal
 
@@ -22,7 +23,7 @@ from aiready.core.app import create_service_app
 from aiready.core.config import get_config
 from aiready.core.identity import Principal, current_principal
 from aiready.core.interfaces import ToolDefinition
-from aiready.core.wiring import connect
+from aiready.mcp.service import ToolService
 from aiready.mcp.config import ToolsConfig
 from aiready.mcp.server import MCPMount, build_mcp_server
 
@@ -48,9 +49,21 @@ def openai_specs(tools: list[ToolDefinition]) -> list[dict[str, Any]]:
                                               "parameters": t.input_schema}} for t in tools]
 
 
-def create_app() -> FastAPI:
+def create_app(service: ToolService | None = None) -> FastAPI:
+    """Build the MCP server around an in-process ``ToolService``.
+
+    Never ``svc_()`` here: in Kubernetes ``services.tools.url`` is set for every pod, including this
+    one, so wiring would return an HTTP client pointing back at this very service (an infinite loop).
+    """
     cfg = get_config().section("tools", ToolsConfig)
-    server = build_mcp_server(lambda: connect("tools"), name=cfg.mcp_server_name, instructions=cfg.mcp_instructions)
+    holder: dict[str, ToolService] = {}
+
+    def svc_() -> ToolService:
+        if "svc" not in holder:
+            holder["svc"] = service or _local("tools")
+        return holder["svc"]
+
+    server = build_mcp_server(svc_, name=cfg.mcp_server_name, instructions=cfg.mcp_instructions)
     mount = MCPMount(server)
     app = create_service_app("mcp", title="AI-Ready MCP server", on_startup=[mount.start], on_shutdown=[mount.stop])
     app.state.mcp = mount
@@ -65,7 +78,7 @@ def create_app() -> FastAPI:
     @app.get("/v1/tools")
     async def list_tools(format: Literal["json", "webmcp", "openai"] = Query("json"),
                          principal: Principal = Depends(current_principal)) -> Any:
-        tools = await connect("tools").list_tools(principal)
+        tools = await svc_().list_tools(principal)
         if format == "webmcp":
             return webmcp_manifest(tools)
         if format == "openai":
@@ -75,7 +88,7 @@ def create_app() -> FastAPI:
     @app.post("/v1/tools/{name}:call")
     async def call_tool(name: str, body: ToolCallBody = Body(default_factory=ToolCallBody),
                         principal: Principal = Depends(current_principal)) -> JSONResponse:
-        executor = connect("tools")
+        executor = svc_()
         kwargs: dict[str, Any] = {"approval_id": body.approval_id}
         if body.context:
             kwargs["context"] = body.context
@@ -85,8 +98,7 @@ def create_app() -> FastAPI:
     @app.post("/v1/tools:reload")
     async def reload(principal: Principal = Depends(current_principal)) -> dict[str, Any]:
         principal.require_role("admin")
-        svc = connect("tools")
-        errors = await svc.reload() if hasattr(svc, "reload") else []
+        errors = await svc_().reload()
         return {"reloaded": True, "errors": errors}
 
     return app

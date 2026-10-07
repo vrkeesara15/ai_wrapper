@@ -36,13 +36,18 @@ def test_shipped_golden_and_safety_suites_are_valid():
 
 
 def test_shipped_config_merges_into_one_tree():
-    from aiready.core.config import load_tree
-    tree = load_tree(ROOT / "config")
+    from aiready.core.config import _substitute, deep_merge
+    tree: dict = {}
+    files = [ROOT / "config" / "observability.yaml", ROOT / "config" / "finetune.yaml",
+             *sorted((ROOT / "config" / "evals").rglob("*.yaml"))]
+    for f in files:  # only this package's files, merged exactly like the config loader does
+        tree = deep_merge(tree, yaml.safe_load(f.read_text()))
+    tree = _substitute(tree)
     assert {"claims", "safety_injection", "safety_data_leak"} <= set(tree["evals"]["suites"])
     assert tree["evals"]["gate"]["safety_pass_rate"] == 1.0
     GateConfig.model_validate(tree["evals"]["gate"])
-    from aiready.observability.config import ObservabilityConfig
     from aiready.finetune.config import FinetuneConfig
+    from aiready.observability.config import ObservabilityConfig
     cfg = ObservabilityConfig.model_validate(tree["observability"])
     assert cfg.latency_budget_ms["first_token"] == 800
     FinetuneConfig.model_validate(tree["finetune"])

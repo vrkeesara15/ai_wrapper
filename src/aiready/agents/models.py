@@ -83,7 +83,7 @@ class RunView(BaseModel):
     finished_at: float | None = None
 
     @classmethod
-    def of(cls, run: RunState) -> "RunView":
+    def of(cls, run: RunState) -> RunView:
         return cls.model_validate(run.model_dump(include=set(cls.model_fields)))
 
 

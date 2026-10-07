@@ -20,11 +20,12 @@ from __future__ import annotations
 import logging
 import time
 import uuid
-from typing import Any, AsyncIterator, Literal
+from collections.abc import AsyncIterator
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
-from aiready.assistant.config import AssistantConfig
+from aiready.assistant.config import AppConfig, AssistantConfig
 from aiready.core.audit import get_audit
 from aiready.core.config import get_config
 from aiready.core.errors import AIReadyError, ConfigError, ValidationFailed
@@ -64,7 +65,7 @@ class AssistantService:
 
     @property
     def cfg(self) -> AssistantConfig:
-        return self._cfg or get_config().section("assistant", AssistantConfig)
+        return self._cfg or load_assistant_config()
 
     # ------------------------------------------------------------------ routing
     def workflow_for(self, app: str | None, feature: str | None, requested: str | None = None) -> str:
@@ -193,6 +194,20 @@ class AssistantService:
                                   feedback_id=record["id"], edited=fb.edited_answer is not None,
                                   destination=destination, trace_id=trace_id)
         return {"id": record["id"], "stored_in": destination}
+
+def load_assistant_config() -> AssistantConfig:
+    """``assistant`` section, completed from the platform-wide ``apps`` registry (config/platform.yaml): an app
+    onboarded there gets its default workflow, collection and widget origins without being repeated here."""
+    store = get_config()
+    cfg = store.section("assistant", AssistantConfig)
+    for app_id, app in (store.get("apps") or {}).items():
+        if not isinstance(app, dict) or app_id in cfg.apps:
+            continue
+        cfg.apps[app_id] = AppConfig(title=app.get("display_name") or "Assistant", workflow=app.get("default_workflow"),
+                                     collection=app.get("collection"),
+                                     allowed_origins=list(app.get("allowed_origins") or []))
+    return cfg
+
 
 def _done(run: dict[str, Any]) -> dict[str, Any]:
     result = run.get("result") or {}

@@ -13,7 +13,7 @@ from aiready.agents.workflows import WorkflowRegistry
 from aiready.core import wiring
 from aiready.mcp.config import ToolsConfig
 from aiready.mcp.service import ToolService
-from aiready.testing import AllowAllPolicy, FakeGateway
+from aiready.testing import AllowAllPolicy, FakeGateway, PassThroughGuardrails
 
 
 @pytest.fixture
@@ -58,6 +58,7 @@ def tools(facade) -> ToolService:
 @pytest.fixture
 def make_runtime(gateway, tools):
     wiring.override("policy", AllowAllPolicy())
+    wiring.override("guardrails", PassThroughGuardrails())
     made: list[AgentRuntime] = []
 
     def factory(**overrides: Any) -> AgentRuntime:

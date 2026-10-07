@@ -66,6 +66,7 @@ class IncidentService:
         self.registry = registry
         self.egress = egress
         self.revocation_ttl = revocation_ttl
+        self._last_sync = 0.0
         self._warm()
 
     @property
@@ -81,6 +82,23 @@ class IncidentService:
                 self.kv.set(f"revoked:{key}", entry, ttl=(exp - now) if exp else None)
         for name, entry in self.store.list(NS_ROUTES):
             self.kv.set(f"route_disabled:{name}", entry)
+
+    def _resync(self, interval: float = 2.0) -> None:
+        """With a process-local KV (pilot: memory), another process - the CLI, a second worker - may have
+        changed the deny-list in the shared state store. Mirror it at most every ``interval`` seconds so a
+        revocation or route closure takes effect everywhere within seconds. Shared KVs (redis) need no resync."""
+        from aiready.core.stores import MemoryKV
+
+        if not isinstance(self.kv, MemoryKV) or time.time() - self._last_sync < interval:
+            return
+        self._last_sync = time.time()
+        live = {f"revoked:{k}" for k, e in self.store.list(NS_REVOKED)
+                if not e.get("expires_at") or e["expires_at"] > time.time()}
+        live |= {f"route_disabled:{n}" for n, _ in self.store.list(NS_ROUTES)}
+        for k in self.kv.keys("revoked:*") + self.kv.keys("route_disabled:*"):
+            if k not in live:
+                self.kv.delete(k)
+        self._warm()
 
     def _log(
         self, principal: Principal, event: str, resource: str, incident_id: str | None, **details: Any
@@ -167,6 +185,7 @@ class IncidentService:
         """Returns the revocation reason when the principal's subject or token id is on the deny-list."""
         if not principal:
             return None
+        self._resync()
         sub, jti = _sub_and_jti(principal)
         for key in ([f"sub:{sub}"] if sub else []) + ([f"jti:{jti}"] if jti else []):
             entry = self.kv.get(f"revoked:{key}")
@@ -251,6 +270,7 @@ class IncidentService:
         return out
 
     def route_disabled(self, name: str) -> bool:
+        self._resync()
         return self.kv.get(f"route_disabled:{name}") is not None
 
     def closed_routes(self) -> list[dict[str, Any]]:

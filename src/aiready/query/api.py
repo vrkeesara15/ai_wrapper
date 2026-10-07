@@ -9,6 +9,7 @@
 """
 
 from __future__ import annotations
+from aiready.core.wiring import local as _local
 
 from typing import Any
 
@@ -26,7 +27,7 @@ def create_app(service: Any | None = None) -> FastAPI:
         if holder["svc"] is None:
             from aiready.query.service import QueryServiceImpl
 
-            holder["svc"] = QueryServiceImpl.from_config()
+            holder["svc"] = _local("query")
         return holder["svc"]
 
     app = create_service_app("query", title="AI-Ready structured data query service")

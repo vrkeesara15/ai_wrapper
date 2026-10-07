@@ -1,0 +1,77 @@
+# =====================================================================================================
+# Agent runtime (package aiready.agents, port 8120, wiring name `agents`)
+#
+# Stateless workers execute versioned step graphs (config/workflows/*.yaml). After every step the run is
+# checkpointed, so any worker can resume it; limits cap each run; writes pause for the approval inbox.
+# =====================================================================================================
+agents:
+  # Caps per run. A workflow may set lower values in its own `limits:`, never higher ones.
+  limits:
+    max_steps: 40
+    max_seconds: 300          # active processing time; waiting for an approver does not count
+    max_tokens: 60000
+    max_tool_calls: 25
+    max_subagent_depth: 2
+
+  # Error handler: transient failures (upstream errors, timeouts) are retried, then the run stops with
+  # status `failed` and the reason (or goes to the step's `on_error` target).
+  retry:
+    max_attempts: 3
+    backoff_seconds: 0.5
+    max_backoff_seconds: 8
+
+  workers:
+    mode: ${AIREADY_AGENT_WORKERS:-inline}   # inline: runs execute in the process that started them (pilot)
+                                             # pool: `count` workers per replica pull from the run queue
+    count: 2
+    poll_interval_seconds: 0.5
+    lease_seconds: 120        # a run whose worker died is picked up again after this
+    steps_per_slice: 0        # >0: re-queue a run every N steps so long runs share the workers
+
+  queue: {type: "${AIREADY_QUEUE_TYPE:-memory}", url: "${AIREADY_REDIS_URL:-redis://localhost:6379/0}"}
+  lease_store: {type: "${AIREADY_KV_TYPE:-memory}", url: "${AIREADY_REDIS_URL:-redis://localhost:6379/0}"}
+  topic: agent_runs
+
+  default_workflow: retrieval_chain
+  default_model: auto         # logical route resolved by the gateway
+  system_prompt: >-
+    You are an assistant working inside the user's application. You act with the user's permissions.
+    Use the tools to look things up before answering. Actions that change data wait for a person to
+    approve them; say so plainly when that happens. Cite sources with their [n] markers.
+
+  # Named agents used by workflows (`agent: <name>`): prompt, model route and a tool allow-list.
+  profiles:
+    claims_assistant:
+      description: Answers claim questions and prepares claim updates for approval.
+      model: chat
+      tools: [search_knowledge, list_claims, get_claim, get_policy, add_claim_note, set_claim_status, recall]
+      system_prompt: >-
+        You help claims handlers. Look claims and policies up with the tools before answering, cite the
+        knowledge base, and never claim that a change was made until the tool result says so.
+
+  workflow_pins: {}           # e.g. {claims_assistant: "2"} to keep new runs on a version during a rollout
+  store_user_token: true      # workers act as the user with their short-lived token; when it expires the
+                              # run waits for the user (status waiting_user) - never a service identity
+  event_poll_seconds: 0.25
+  history_chars: 4000         # per step input/output kept in run history
+  tool_result_chars: 12000    # per tool result shown to the model
+
+# -----------------------------------------------------------------------------------------------------
+# Approval gates: "Reads run freely. Writes, payments and deletions wait for a person."
+# Shared by the MCP executor (creates / consumes requests) and the approval inbox (agents API).
+# -----------------------------------------------------------------------------------------------------
+approvals:
+  ttl_seconds: 86400          # an undecided request expires after a day
+  use_within_seconds: 3600    # an approved call must be executed within an hour
+  four_eyes: true             # the requester can never approve their own request
+  default_approver_roles: [approver]
+  admin_roles: [admin]        # may see and decide every request of their tenant
+  # Routing: first matching rule wins (tool glob + effects). Otherwise the policy decision's
+  # `approval_roles` obligation, otherwise default_approver_roles.
+  rules:
+    - tool: "*"
+      effects: [payment]
+      approver_roles: [finance-approver]
+      ttl_seconds: 14400
+    - tool: "set_claim_status"
+      approver_roles: [claims-lead]

@@ -50,7 +50,8 @@ class SessionExchanger:
         with span("assistant.session.exchange", app=app):
             try:
                 async with httpx.AsyncClient(transport=self._transport, timeout=self.cfg.timeout_seconds) as client:
-                    r = await client.post(url, headers=fwd, json={"app": app})
+                    body = {"validator": self.cfg.validator} if self.cfg.validator else {}
+                    r = await client.post(url, headers=fwd, json=body)
             except httpx.HTTPError as exc:
                 raise UpstreamError(f"identity bridge unreachable: {exc}") from exc
         if r.status_code in (401, 403):
@@ -58,9 +59,10 @@ class SessionExchanger:
         if r.status_code >= 400:
             raise UpstreamError(f"identity bridge returned {r.status_code}")
         try:
-            token = r.json()["token"]
-        except (ValueError, KeyError) as exc:
-            raise ConfigError("identity bridge response has no 'token'") from exc
+            payload = r.json()
+            token = payload.get("access_token") or payload["token"]
+        except (ValueError, KeyError, AttributeError) as exc:
+            raise ConfigError("identity bridge response has no 'access_token'") from exc
         principal = get_token_service().verify(token)
         if principal.is_service_only:
             raise AuthenticationError("identity bridge returned a service token, not a user token")

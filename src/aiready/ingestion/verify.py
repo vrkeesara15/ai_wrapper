@@ -75,6 +75,25 @@ class Verifier:
                 return list(entry.access_tags)
         return sorted({t for e in self.registry.entries(source) for t in e.access_tags})
 
+    def _verification_principal(self, groups: list[str], collection: str) -> Principal:
+        """Search never widens access beyond the caller's own groups, so verification runs as a dedicated
+        identity holding exactly the groups the test question declares (default: the expected document's
+        tags). It is minted in-process for one question, never handed out, and the run is audited. It belongs
+        to the collection's own app and tenant, so tenant isolation still holds."""
+        from aiready.search.service import parse_collection
+
+        parsed = parse_collection(collection)
+        app, tenant = (parsed[1], parsed[2]) if parsed else (self.principal.app, self.principal.tenant)
+        try:
+            from aiready.core.identity import get_token_service
+
+            ts = get_token_service()
+            return ts.verify(ts.issue(sub="svc:ingestion-verifier", roles=["service", "verifier"], groups=groups,
+                                      app=app, tenant=tenant, ttl=60))
+        except Exception:  # no signing key in this process: in-process search only needs the groups
+            return Principal(sub="svc:ingestion-verifier", roles=["service", "verifier"], groups=groups,
+                             app=app, tenant=tenant, service="ingestion")
+
     @staticmethod
     def _matches(q: VerifyQuestion, hit: Any) -> bool:
         c = hit.chunk
@@ -90,10 +109,12 @@ class Verifier:
             for q in questions:
                 expected = q.expect_doc_id or q.expect_doc_contains or ""
                 try:
+                    groups = self._groups(q, source)
+                    vp = self._verification_principal(groups, collection)
                     vec = (await self.gateway.embed([q.question], self.principal, model=self.model, priority="live"))[0]
                     hits = await self.search.search(SearchRequest(
                         collection=collection, query_text=q.question, query_vector=vec,
-                        access_groups=self._groups(q, source), top_k=max(q.top_k, 1)), self.principal)
+                        access_groups=groups, top_k=max(q.top_k, 1)), vp)
                     top = hits[: q.top_k]
                     rank = next((i + 1 for i, h in enumerate(top) if self._matches(q, h)), None)
                     res = VerifyResult(question=q.question, passed=rank is not None, expected=expected, rank=rank,

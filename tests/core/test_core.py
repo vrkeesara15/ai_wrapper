@@ -2,6 +2,7 @@ import pytest
 
 from aiready.core import plugins
 from aiready.core.audit import AuditLog, MemorySink, SqliteSink
+from aiready.core.audit import JsonlSink as JsonlSinkCls
 from aiready.core.config import ConfigStore, deep_merge
 from aiready.core.errors import AuthenticationError
 from aiready.core.stores import DocStore, MemoryKV
@@ -86,3 +87,40 @@ def test_revoked_subject_rejected_at_authentication(token_service):
     with pytest.raises(AuthenticationError):
         principal_from_headers({"Authorization": f"Bearer {tok}"})
     assert principal_from_headers({"Authorization": f"Bearer {token_service.issue(sub='bob')}"}).jti
+
+
+def test_keyring_staged_rotation():
+    from aiready.core.identity import TokenService
+
+    old = {"kid": "k1", "secret": "a" * 32, "status": "active"}
+    new = {"kid": "k2", "secret": "b" * 32, "status": "verify"}
+    ts = TokenService(keyring=[old, new])
+    t_old = ts.issue(sub="u")
+    # stage activate: k2 signs, k1 still verifies tokens already issued
+    ts2 = TokenService(keyring=[{**old, "status": "verify"}, {**new, "status": "active"}])
+    assert ts2.verify(t_old).sub == "u"
+    t_new = ts2.issue(sub="u")
+    # stage retire: k1 tokens are rejected
+    ts3 = TokenService(keyring=[{**old, "status": "retired"}, {**new, "status": "active"}])
+    assert ts3.verify(t_new).sub == "u"
+    with pytest.raises(AuthenticationError):
+        ts3.verify(t_old)
+
+
+def test_two_writers_share_one_chain(tmp_path):
+    """Two AuditLog instances (e.g. the CLI and a server) appending to one file keep a single valid chain."""
+    path = str(tmp_path / "shared.jsonl")
+    a, b = AuditLog([JsonlSinkCls(path)], hmac_key="k"), AuditLog([JsonlSinkCls(path)], hmac_key="k")
+    for i in range(5):
+        a.record("x", actor="server", n=i)
+        b.record("y", actor="cli", n=i)
+    assert a.verify()[0], a.verify()[1]
+
+
+def test_sqlite_two_writers(tmp_path):
+    path = str(tmp_path / "a.db")
+    a, b = AuditLog([SqliteSink(path)]), AuditLog([SqliteSink(path)])
+    for i in range(3):
+        a.record("x", actor="s", n=i)
+        b.record("y", actor="c", n=i)
+    assert a.verify()[0]

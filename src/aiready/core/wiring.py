@@ -79,6 +79,30 @@ def connect(name: str) -> Any:
         return inst
 
 
+def local(name: str) -> Any:
+    """The in-process implementation of ``name``, shared with ``connect(name)`` when that resolves locally.
+
+    Each service's ``api.create_app()`` serves ``local(<own name>)``. This keeps one instance per process
+    (in the all-in-one pilot, the search API and the RAG service see the same index) and never resolves to an
+    HTTP client pointing back at the pod itself when ``services.<own name>.url`` is configured.
+    """
+    with _LOCK:
+        if name in _OVERRIDES:
+            return _OVERRIDES[name]
+        cfg = get_config().get(f"services.{name}", {}) or {}
+        if not cfg.get("url"):
+            return connect(name)
+        key = f"{name}:local"
+        if key not in _INSTANCES:
+            if (name, "local") not in _PROVIDERS and name in _PACKAGES:
+                importlib.import_module(_PACKAGES[name])
+            factory = _PROVIDERS.get((name, "local"))
+            if factory is None:
+                raise ConfigError(f"no 'local' provider for service '{name}'")
+            _INSTANCES[key] = factory(cfg)
+        return _INSTANCES[key]
+
+
 def service_token(service: str) -> str | None:
     """This service's own token for X-Service-Token, when a signing key is available."""
     try:

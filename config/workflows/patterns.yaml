@@ -1,0 +1,24 @@
+# =====================================================================================================
+# Workflow registry: versioned step graphs (package aiready.agents).
+#
+# Each workflow is either a pattern (single_call | retrieval_chain | router | agent_loop) or explicit
+# `steps:` (types: llm, tool, retrieve, query, approval, branch, subagent, end - or `type: {class: ...}`).
+# A run is pinned to the version and graph it started with. Keep an older version beside the new one
+# under `<name>@<version>` while runs started on it finish (or to roll back with agents.workflow_pins).
+# Templates: {{input.message}}, {{steps.<id>.<field>}}, {{last.<field>}}, {{vars.<name>}}.
+# =====================================================================================================
+workflows:
+
+  single_call:
+    description: One model call, streamed.
+    pattern: single_call
+
+  retrieval_chain:
+    description: Answer from the knowledge base the user may see, with citations (assistant default).
+    pattern: retrieval_chain
+    generate: rag            # rag: the RAG service answers and checks grounding | llm: passages -> llm step
+
+  agent_loop:
+    description: Plan, call a tool, check, decide - until the goal is met or a limit is reached.
+    pattern: agent_loop
+    tools: ["*"]             # tools the model may call (still filtered by the user's roles)

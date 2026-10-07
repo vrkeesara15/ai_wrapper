@@ -69,7 +69,7 @@ class GateResult(BaseModel):
         lines = [f"# Release gate {self.release}: {'PASSED' if self.passed else 'BLOCKED'}", "",
                  "| Suite | Check | Result | Actual | Expected | Note |", "|---|---|---|---|---|---|"]
         for c in self.checks:
-            fmt = lambda v: "-" if v is None else f"{v:.4g}"  # noqa: E731
+            fmt = lambda v: "-" if v is None else f"{v:.4g}"
             lines.append(f"| {c.suite} | {c.name} | {'pass' if c.passed else '**FAIL**'} | {fmt(c.actual)} | "
                          f"{fmt(c.expected)} | {c.message} |")
         return "\n".join(lines) + "\n"

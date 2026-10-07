@@ -1,0 +1,3 @@
+# Local pilot settings and pre-staged model weights never go into git.
+.env
+models/

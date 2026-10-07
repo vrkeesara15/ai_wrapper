@@ -65,6 +65,7 @@ class ToolsConfig(BaseModel):
     default_timeout_seconds: float = 30.0
     max_result_bytes: int = 65536
     forward_user_token: bool = True  # never relax: the facade must see the signed-in user
+    retry_failed_sources_seconds: float = 60.0  # reload a source that failed to load after this long
     http_retries: int = 0  # retries for read tools only; writes are never retried automatically
     approval_header: str = "X-AIReady-Approval"  # sent to the facade with the approval id of an approved call
     cors_allowed_origins: list[str] = Field(default_factory=list)  # pages using the WebMCP add-on

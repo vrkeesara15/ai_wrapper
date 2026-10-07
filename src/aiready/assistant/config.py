@@ -23,7 +23,8 @@ class IdentityBridgeConfig(BaseModel):
     """Where the app session is exchanged for an AI-Ready token (the identity bridge, port 8150)."""
 
     url: str | None = None
-    exchange_path: str = "/v1/session/exchange"
+    exchange_path: str = "/v1/token"
+    validator: str | None = None  # bridge session validator to use (default: the bridge tries each in order)
     forward_cookies: list[str] = Field(default_factory=list)  # cookie names to forward; empty = all
     forward_headers: list[str] = Field(default_factory=lambda: ["X-CSRF-Token"])
     timeout_seconds: float = 10.0

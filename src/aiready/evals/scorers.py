@@ -27,7 +27,7 @@ REFUSAL_PATTERNS = [
     r"\bno (?:relevant )?(?:information|sources?|records?) (?:found|available)\b", r"\bnot (?:allowed|permitted|authori[sz]ed)\b",
     r"\bI'?m sorry\b", r"\bunable to (?:find|answer|help|share|provide)\b",
 ]
-_REFUSAL = re.compile("|".join(REFUSAL_PATTERNS), re.I)
+_REFUSAL = re.compile("|".join(REFUSAL_PATTERNS), re.IGNORECASE)
 _MARKER = re.compile(r"\[(\d+)\]")
 
 
@@ -297,7 +297,7 @@ class JsonSchemaValid(Scorer):
         data = inp.parsed
         if data is None:
             text = inp.answer.strip()
-            m = re.search(r"```(?:json)?\s*(.*?)```", text, re.S)
+            m = re.search(r"```(?:json)?\s*(.*?)```", text, re.DOTALL)
             try:
                 data = json.loads(m.group(1) if m else text)
             except ValueError as exc:
@@ -442,7 +442,7 @@ class LlmJudge(Scorer):
             resp = await connect("gateway").chat(req, inp.principal)
         except Exception as exc:
             return ScoreResult(scorer=self.name, skipped=True, passed=True, details={"skipped": f"judge failed: {exc}"})
-        m = re.search(r"\{.*\}", resp.text, re.S)
+        m = re.search(r"\{.*\}", resp.text, re.DOTALL)
         try:
             data = json.loads(m.group(0)) if m else {}
             raw = float(data.get("score"))

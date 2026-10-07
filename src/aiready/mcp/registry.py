@@ -16,8 +16,10 @@ import contextvars
 import json
 import logging
 import re
+import time
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable, Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 from urllib.parse import quote
 
 import httpx
@@ -305,12 +307,14 @@ class ToolRegistry:
                                          follow_redirects=False)
         self._tools: dict[str, Tool] = {}
         self._loaded = False
+        self._loaded_at = 0.0
         self._spec_loader = spec_loader
         self.errors: list[str] = []
 
     # ------------------------------------------------------------------ access
     async def ensure_loaded(self) -> None:
-        if not self._loaded:
+        stale = self.errors and time.monotonic() - self._loaded_at > self.cfg.retry_failed_sources_seconds
+        if not self._loaded or stale:  # a facade that was down at start is picked up once it is back
             await self.load()
 
     def get(self, name: str) -> Tool | None:
@@ -370,6 +374,7 @@ class ToolRegistry:
                 raise ConfigError(f"custom tool {spec} must expose `definition: ToolDefinition` and `invoke()`")
             self.add(tool)
         self._loaded = True
+        self._loaded_at = time.monotonic()
 
     async def _load_spec(self, src: OpenAPISourceConfig) -> dict[str, Any]:
         if self._spec_loader is not None:

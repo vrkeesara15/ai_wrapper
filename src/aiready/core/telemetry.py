@@ -238,6 +238,7 @@ def _http_exporter(url: str) -> Callable[[SpanRecord], None]:
 
     def worker() -> None:
         client = httpx.Client(timeout=5.0)
+        token: tuple[str | None, float] = (None, 0.0)
         while True:
             batch = [q.get()]
             try:
@@ -245,8 +246,16 @@ def _http_exporter(url: str) -> Callable[[SpanRecord], None]:
                     batch.append(q.get(timeout=0.5))
             except queue.Empty:
                 pass
+            if token[1] < time.time():  # service token proves which service ships the spans
+                try:
+                    from aiready.core.identity import get_token_service
+
+                    token = (get_token_service().issue_service_token(recorder.service, ttl=3600), time.time() + 3000)
+                except Exception:
+                    token = (None, time.time() + 60)
             try:
-                client.post(url.rstrip("/") + "/v1/spans", json=[b.model_dump() for b in batch])
+                client.post(url.rstrip("/") + "/v1/spans", json=[b.model_dump() for b in batch],
+                            headers={"X-Service-Token": token[0]} if token[0] else {})
             except Exception:
                 pass
 

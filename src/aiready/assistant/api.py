@@ -21,8 +21,9 @@ from __future__ import annotations
 import fnmatch
 import json
 import os
+from collections.abc import AsyncIterator, Callable
 from pathlib import Path
-from typing import Any, AsyncIterator, Callable
+from typing import Any
 
 from fastapi import Body, Depends, FastAPI, Request
 from fastapi.responses import FileResponse

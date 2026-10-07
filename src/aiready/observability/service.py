@@ -30,7 +30,7 @@ from aiready.observability.feedback import FeedbackCapture, FeedbackIn, Feedback
 from aiready.observability.governance import authorize, require_any_role
 from aiready.observability.masking import RegexMasker, SpanMasker
 from aiready.observability.review import ReviewItem, ReviewLabel, ReviewQueue
-from aiready.observability.scoring import LiveScorer, ScoreRecord, extract_sample
+from aiready.observability.scoring import AnswerSample, LiveScorer, ScoreRecord, extract_sample, sampled
 from aiready.observability.traces import (
     TraceStore,
     TraceSummary,
@@ -75,7 +75,7 @@ class ObservabilityService:
         self._bg: asyncio.Task[None] | None = None
 
     @classmethod
-    def from_config(cls) -> "ObservabilityService":
+    def from_config(cls) -> ObservabilityService:
         return cls(load_config())
 
     @property
@@ -107,6 +107,21 @@ class ObservabilityService:
             except Exception:  # scoring is best-effort; the spans are stored either way
                 log.exception("live scoring failed for %s", trace_id)
         return {"accepted": n, "scored": scored}
+
+    async def submit_answer(self, sample: AnswerSample, principal: Principal | None = None, *,
+                            force: bool = False) -> ScoreRecord | None:
+        """Explicit path for emitters that do not put answers in span attributes (privacy by default): the
+        answer is masked, then live-scored when its trace is sampled (``force`` scores it regardless)."""
+        if not force and not sampled(sample.trace_id, self.cfg.scoring.sample_rate):
+            return None
+        if self.scorer.store.get("obs.scores", sample.trace_id) is not None:
+            return None
+        sample = sample.model_copy(update={
+            "question": await self.masker.mask_text(sample.question),
+            "answer": await self.masker.mask_text(sample.answer),
+            "passages": [p.model_copy(update={"text": await self.masker.mask_text(p.text)}) for p in sample.passages],
+        })
+        return await self.scorer.score(sample)
 
     def install_local_exporter(self) -> None:
         """Capture spans of this process (single-process pilot). They are flushed by the background loop."""

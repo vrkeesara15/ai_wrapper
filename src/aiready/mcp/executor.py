@@ -151,7 +151,7 @@ class ToolExecutorService:
                 content = await asyncio.wait_for(tool.invoke(arguments, principal), timeout=timeout)
                 succeeded = True
                 break
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 last_error = f"tool {defn.name} timed out after {timeout:g}s"
             except AIReadyError as exc:
                 last_error = exc.message

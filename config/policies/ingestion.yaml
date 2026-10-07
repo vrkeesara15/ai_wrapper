@@ -1,0 +1,46 @@
+# Policy domain: ingestion - which pipelines may read sources and what may enter the search index.
+# The pipeline runs as its own service identity (svc:ingestion, role "ingestion"); item-level access is carried
+# by the access tags written onto every chunk and enforced at search time.
+policies:
+  ingestion:
+    version: 1.0.0
+    description: Source reads and index writes by the ingestion pipeline.
+    rules:
+      - id: ingestion.source.read
+        description: The ingestion service (or an ingestion admin) may read configured sources.
+        action: data.ingest
+        effect: allow
+        when:
+          principal.roles: {any_in: [ingestion, ingestion-admin, service]}
+
+      - id: ingestion.index.write
+        description: Documents with an access list may be indexed by the ingestion service.
+        action: data.index
+        effect: allow
+        when:
+          principal.roles: {any_in: [ingestion, ingestion-admin, service]}
+          context.access_tags: {exists: true}
+
+      - id: ingestion.index.injection
+        description: Documents carrying suspected prompt injection never enter the index.
+        action: data.index
+        effect: deny
+        when:
+          context.injection_suspected: true
+
+      - id: ingestion.index.restricted
+        description: Restricted documents are not indexed unless the source is explicitly cleared for them.
+        action: data.index
+        effect: deny
+        when:
+          context.data_class: restricted
+          not:
+            context.restricted_cleared: true
+
+      - id: ingestion.index.personal_unmasked
+        description: Personal data must be masked before indexing.
+        action: data.index
+        effect: deny
+        when:
+          context.personal_data: true
+          context.pii_masked: false

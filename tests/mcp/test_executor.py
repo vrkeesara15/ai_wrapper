@@ -158,3 +158,43 @@ async def test_custom_plugin_tool(policy):
     res = await svc.call("echo", {"text": "there"}, make_principal())
     assert res.ok and res.content == "hi there"
 
+
+
+async def test_approved_call_carries_the_approval_header_and_pii_is_masked(policy):
+    from mcp_fixtures import FacadeRecorder
+    from test_openapi import FACADE_STYLE
+
+    from aiready.agents.approvals import get_approval_store
+    from aiready.core.interfaces import PolicyDecision, ScreenResult
+
+    class MaskingGuardrails:
+        async def mask(self, text):
+            return ScreenResult(allowed=True, text=text.replace("CLM-1", "[CLAIM]"))
+
+    class Obligating:
+        async def decide(self, inp):
+            if inp.resource["effect"] != "read" and not inp.context.get("approval_id"):
+                return PolicyDecision(allow=False, effect="require_approval",
+                                      obligations={"approval_roles": ["claims-lead"]})
+            return PolicyDecision(allow=True, obligations={"mask_pii": True})
+
+    wiring.override("policy", Obligating())
+    wiring.override("guardrails", MaskingGuardrails())
+    facade = FacadeRecorder()
+    cfg = ToolsConfig.model_validate({
+        "sources": [{"name": "facade", "spec": FACADE_STYLE, "base_url": "http://facade:8151"}],
+        "builtins": {n: {"enabled": False} for n in ("search_knowledge", "query_data", "remember", "recall")}})
+    svc = ToolService(cfg, transport=facade.transport, watch_config=False)
+    alice = make_principal("alice", roles=["claims-user"])
+    lead = make_principal("lena", roles=["claims-lead"])
+    args = {"claim_number": "CLM-1", "text": "call back"}
+    pending = await svc.call("add_claim_note", args, alice)
+    req = get_approval_store().get(pending.approval_id)
+    assert req.approver_roles == ["claims-lead"]  # routed by the policy obligation
+    get_approval_store().decide(pending.approval_id, lead, approve=True)
+    done = await svc.call("add_claim_note", args, alice, approval_id=pending.approval_id)
+    assert done.ok
+    sent = facade.requests[0]
+    assert sent.headers["x-aiready-approval"] == pending.approval_id
+    assert sent.url.path == "/v1/claims/CLM-1/notes" and json.loads(sent.content) == {"text": "call back"}
+    assert done.content["path"] == "/v1/claims/[CLAIM]/notes"  # personal data masked before any model sees it

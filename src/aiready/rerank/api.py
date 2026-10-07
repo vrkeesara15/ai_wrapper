@@ -9,6 +9,7 @@
 """
 
 from __future__ import annotations
+from aiready.core.wiring import local as _local
 
 from typing import Any
 
@@ -24,7 +25,7 @@ def create_app(service: RerankService | None = None) -> FastAPI:
 
     def svc() -> RerankService:
         if "svc" not in holder:
-            holder["svc"] = service or RerankService()
+            holder["svc"] = service or _local("rerank")
         return holder["svc"]
 
     async def shutdown() -> None:

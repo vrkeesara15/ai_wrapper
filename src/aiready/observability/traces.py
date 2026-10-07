@@ -31,7 +31,8 @@ import json
 import threading
 import time
 from collections import defaultdict
-from typing import Any, Iterable, Protocol
+from collections.abc import Iterable
+from typing import Any, Protocol
 
 from pydantic import BaseModel, Field
 from sqlalchemy import Column, Float, Index, MetaData, String, Table, Text, create_engine, delete, select
@@ -84,7 +85,7 @@ class TraceSummary(BaseModel):
 class TraceNode(BaseModel):
     span: SpanRecord
     duration_ms: float
-    children: list["TraceNode"] = Field(default_factory=list)
+    children: list[TraceNode] = Field(default_factory=list)
 
 
 class TraceTree(BaseModel):

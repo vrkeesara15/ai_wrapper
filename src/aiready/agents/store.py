@@ -89,7 +89,7 @@ class EventBus:
 
     def __init__(self, backlog_runs: int = 256, backlog_events: int = 5000) -> None:
         self._subs: dict[str, set[asyncio.Queue[RunEvent]]] = defaultdict(set)
-        self._backlog: "OrderedDict[str, deque[RunEvent]]" = OrderedDict()
+        self._backlog: OrderedDict[str, deque[RunEvent]] = OrderedDict()
         self._backlog_runs = backlog_runs
         self._backlog_events = backlog_events
 

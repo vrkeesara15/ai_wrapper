@@ -24,6 +24,8 @@ ingestion:
     # Policy wordings and handbooks on a file share (local path, or an SMB/NFS share mounted on the worker).
     - name: policy-docs
       collection: claims-kb
+      app: claims             # indexed into <collection>__<app>__<tenant>, as RAG queries it
+      tenant: ${AIREADY_DEMO_TENANT:-acme}
       schedule: every 15m           # "every 15m" | "interval:1h" | "@daily" | cron "*/10 6-20 * * 1-5"
       data_class: internal          # sensitivity floor for every chunk of the source
       require_access_tags: true     # fail closed: documents without an access list are not indexed
@@ -59,6 +61,8 @@ ingestion:
     # under the same source name, so both paths share one registry and one set of document ids.
     - name: legacy-db
       collection: claims-records
+      app: claims             # indexed into <collection>__<app>__<tenant>, as RAG queries it
+      tenant: ${AIREADY_DEMO_TENANT:-acme}
       schedule: "@daily"
       data_class: personal
       connector:
@@ -102,6 +106,8 @@ ingestion:
     - name: claims-api-export
       enabled: false
       collection: claims-records
+      app: claims             # indexed into <collection>__<app>__<tenant>, as RAG queries it
+      tenant: ${AIREADY_DEMO_TENANT:-acme}
       connector:
         type: http_json
         base_url: ${LEGACY_APP_URL:-http://localhost:8000}
@@ -119,6 +125,8 @@ ingestion:
     - name: wiki
       enabled: false
       collection: claims-kb
+      app: claims             # indexed into <collection>__<app>__<tenant>, as RAG queries it
+      tenant: ${AIREADY_DEMO_TENANT:-acme}
       connector:
         type: confluence
         base_url: https://wiki.example.com
@@ -129,6 +137,8 @@ ingestion:
     - name: tickets
       enabled: false
       collection: claims-kb
+      app: claims             # indexed into <collection>__<app>__<tenant>, as RAG queries it
+      tenant: ${AIREADY_DEMO_TENANT:-acme}
       connector:
         type: jira
         base_url: https://jira.example.com

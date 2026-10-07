@@ -12,6 +12,7 @@ uvicorn aiready.search.api:create_app --factory --port 8102
 """
 
 from __future__ import annotations
+from aiready.core.wiring import local as _local
 
 from typing import Any
 
@@ -58,7 +59,7 @@ def create_app(service: SearchService | None = None) -> FastAPI:
 
     def svc() -> SearchService:
         if "svc" not in holder:
-            holder["svc"] = service or SearchService()
+            holder["svc"] = service or _local("search")
         return holder["svc"]
 
     app = create_service_app("search", readiness=lambda: svc().ready())

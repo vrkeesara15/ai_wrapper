@@ -230,13 +230,17 @@ class AdapterReleaseGate:
             from aiready.core.wiring import connect
 
             reg = connect("registry")
-            for method in ("register_adapter", "register_model"):
-                fn = getattr(reg, method, None)
-                if fn is not None:
-                    res = fn(entry, principal) if method == "register_adapter" else fn(**entry)
-                    if inspect.isawaitable(res):
-                        await res
-                    break
+            fn = getattr(reg, "register_adapter", None)
+            if fn is not None:
+                record = {"name": r.adapter, "version": r.id[:12], "base_model": r.base_name,
+                          "base_model_version": r.base.registry_version or r.base.revision, "task": r.task,
+                          "dataset_version": r.dataset, "artifact_uri": adapter_uri,
+                          "eval_scores": {"heldout": r.adapter_score or 0.0,
+                                          "leak_rate": r.memorisation.echo_rate if r.memorisation else 0.0},
+                          "base_eval_scores": {"heldout": r.base_score or 0.0}}
+                res = fn(record, principal)
+                if inspect.isawaitable(res):
+                    await res
         except Exception as exc:
             log.info("model registry not updated for adapter %s (%s)", r.adapter, exc)
         get_audit().for_principal(principal, "finetune.register", resource=r.adapter, decision="registered",

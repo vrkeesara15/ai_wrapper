@@ -14,6 +14,7 @@ Every route acts on the caller's own memory only (tenant + user from the verifie
 """
 
 from __future__ import annotations
+from aiready.core.wiring import local as _local
 
 from typing import Any, Literal
 
@@ -45,7 +46,7 @@ def create_app(service: Any | None = None) -> FastAPI:
         if holder["svc"] is None:
             from aiready.memory.service import MemoryServiceImpl
 
-            holder["svc"] = MemoryServiceImpl.from_config()
+            holder["svc"] = _local("memory")
         return holder["svc"]
 
     app = create_service_app("memory", title="AI-Ready memory service")

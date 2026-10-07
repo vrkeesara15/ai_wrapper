@@ -87,7 +87,7 @@ class WorkflowDef(BaseModel):
     def first(self) -> str:
         return self.start or self.steps[0].id
 
-    def validate_graph(self) -> "WorkflowDef":
+    def validate_graph(self) -> WorkflowDef:
         if not self.steps:
             raise ConfigError(f"workflow {self.name}: no steps")
         ids = [s.id for s in self.steps]

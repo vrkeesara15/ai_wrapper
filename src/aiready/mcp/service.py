@@ -27,6 +27,11 @@ class ToolService(ToolExecutorService):
         if watch_config:
             get_config().subscribe(self._on_config)
 
+    @classmethod
+    def from_config(cls) -> "ToolService":
+        """The in-process executor built from the ``tools`` configuration section."""
+        return cls()
+
     def _on_config(self, tree: dict[str, Any]) -> None:
         """New routes/overrides take effect on the next call; the registry reloads lazily."""
         cfg = ToolsConfig.model_validate(tree.get("tools") or {})

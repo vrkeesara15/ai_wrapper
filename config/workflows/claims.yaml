@@ -1,0 +1,48 @@
+# Workflows for the demo claims application (apps.claims.default_workflow in platform.yaml).
+workflows:
+
+  claims_assistant:
+    version: "1"
+    description: Claims helper - routes between knowledge questions and claim actions.
+    pattern: router
+    model: small                         # the router uses the small model tier
+    routes:
+      knowledge:
+        workflow: retrieval_chain
+        description: questions about policy wording, procedures and guidelines
+      claims:
+        workflow: claims_agent
+        description: looking up, updating or adding notes to specific claims or policies
+    default: knowledge
+
+  claims_agent:
+    version: "1"
+    description: Agent loop over the claims facade tools; writes wait for approval.
+    pattern: agent_loop
+    agent: claims_assistant              # profile in agents.profiles: prompt, model, tool allow-list
+    tools: ["*"]                         # narrowed by the profile's allow-list
+    limits: {max_steps: 20, max_tool_calls: 10}
+
+  claim_status_change:
+    version: "1"
+    description: >-
+      Explicit graph - look the claim up, then change its status. The write tool waits for an approver on its
+      own (the executor's approval gate); use an `approval` step for gates on actions that are not tool calls.
+    steps:
+      - id: lookup
+        type: tool
+        name: get_claim
+        arguments: {claim_number: "{{input.claim_number}}"}
+        next: change
+      - id: change
+        type: tool
+        name: set_claim_status
+        arguments: {claim_number: "{{input.claim_number}}", status: "{{input.status}}"}
+        on_reject: declined
+        next: done
+      - id: done
+        type: end
+        output: "Claim {{input.claim_number}} is now {{input.status}}."
+      - id: declined
+        type: end
+        output: "The change to claim {{input.claim_number}} was not approved."

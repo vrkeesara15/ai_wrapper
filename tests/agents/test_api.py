@@ -32,7 +32,7 @@ def test_start_stream_and_inbox_over_http(service, gateway, facade):
     bob = make_principal("bob", roles=["approver"])
     gateway.script(tool="close_claim", arguments={"claim_id": "C3", "status": "closed"})
     gateway.script(content="Closed C3.")
-    with TestClient(create_app()) as client:
+    with TestClient(create_app(service)) as client:
         r = client.post("/v1/runs", headers=_h(alice), json={"workflow": "claims_agent", "input": {"message": "close C3"}})
         assert r.status_code == 202
         run_id = r.json()["id"]

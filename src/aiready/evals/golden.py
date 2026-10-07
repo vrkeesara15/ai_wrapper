@@ -82,7 +82,7 @@ class EvalCase(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
     @model_validator(mode="after")
-    def _check(self) -> "EvalCase":
+    def _check(self) -> EvalCase:
         if not self.question.strip():
             raise ValueError("question is empty")
         return self
