@@ -36,6 +36,7 @@ NS_MODELS = "registry.models"
 NS_PROMPTS = "registry.prompts"
 NS_PROMPT_VERSIONS = "registry.prompt_versions"
 NS_ADAPTERS = "registry.adapters"
+NS_EVALUATIONS = "registry.evaluations"
 
 Status = Literal["draft", "approved", "deprecated"]
 Availability = Literal[
@@ -337,6 +338,30 @@ class RegistryService:
                 self.register_model(rec, None, seed=True)
                 n += 1
         return n
+
+    # ------------------------------------------------------------------ release-gate evidence
+    def record_evaluation(self, *, release: str, passed: bool, report: dict[str, Any],
+                          artifact: dict[str, Any] | None = None, principal: Principal | None = None) -> dict[str, Any]:
+        """Keep a release-gate verdict as registry evidence. When the artifact names a model version
+        (``{"kind": "model", "name", "version"}``), its suite scores land in the model's ``eval_scores`` and
+        history, so approvers see the evaluation that the approval is based on."""
+        artifact = artifact or {}
+        entry = {"release": release, "passed": passed, "artifact": artifact, "ts": _now(), "by": _actor(principal),
+                 "checks": report.get("checks", []), "baselines": report.get("baselines", {})}
+        self.store.put(NS_EVALUATIONS, f"{release}:{int(entry['ts'] * 1000)}", entry)
+        if artifact.get("kind") == "model" and artifact.get("name") and artifact.get("version"):
+            rec = self._load_model(f"{artifact['name']}@{artifact['version']}")
+            for c in report.get("checks", []):
+                if c.get("actual") is not None and c.get("suite") and c.get("name"):
+                    rec.eval_scores[f"{c['suite']}.{c['name']}"] = float(c["actual"])
+            self._history(rec, principal, "evaluated", release=release, passed=passed)
+            self.store.put(NS_MODELS, rec.key, rec.model_dump(mode="json"))
+        _audit(principal, "registry.evaluation", resource=f"release:{release}",
+               decision="passed" if passed else "blocked", artifact=artifact)
+        return entry
+
+    def evaluations(self, release: str | None = None) -> list[dict[str, Any]]:
+        return [v for _, v in self.store.list(NS_EVALUATIONS, prefix=f"{release}:" if release else "")]
 
     def _load_model(self, key: str) -> ModelRecord:
         raw = self.store.get(NS_MODELS, key)

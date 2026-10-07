@@ -163,6 +163,17 @@ def create_app(service: GovernanceService | None = None) -> FastAPI:
         return await run_policy_cases(body.cases, svc.engine)
 
     # ------------------------------------------------------------------ registry: models
+    @app.post("/v1/registry/evaluations")
+    async def record_evaluation(body: dict[str, Any], p: Principal = Depends(caller)) -> dict[str, Any]:
+        """Release-gate verdicts (CI or the evals service). Evidence only: approval stays a separate step."""
+        return svc.registry.record_evaluation(release=str(body["release"]), passed=bool(body["passed"]),
+                                              report=body.get("report") or {}, artifact=body.get("artifact"),
+                                              principal=p)
+
+    @app.get("/v1/registry/evaluations")
+    async def list_evaluations(release: str | None = None, p: Principal = Depends(caller)) -> list[dict[str, Any]]:
+        return svc.registry.evaluations(release)
+
     @app.get("/v1/registry/models")
     async def list_models(
         status: str | None = None, slot: str | None = None, p: Principal = Depends(caller)

@@ -240,3 +240,23 @@ async def test_jwks_published_for_asymmetric_keys_only():
         jwk = jwt.PyJWK(key)
         assert jwt.decode(tok, jwk.key, algorithms=["RS256"], audience="aiready")["sub"] == "x"
         assert (await c.get("/v1/validators")).json()["validators"][0]["name"] == "h"
+
+
+async def test_one_bridge_serves_several_apps():
+    """Each app's validator names its app and its own role mapping."""
+    from aiready.integration.config import IdentityBridgeConfig
+    from aiready.integration.identity_bridge import IdentityBridge, SessionIdentity
+    from aiready.core import wiring
+    from aiready.testing import AllowAllPolicy
+
+    wiring.override("policy", AllowAllPolicy())
+    cfg = IdentityBridgeConfig(app="claims", validators=[
+        {"type": "header_trust", "name": "crm-proxy", "app": "crm", "trusted_cidrs": ["127.0.0.1/32"],
+         "role_mapping": {"rules": [{"app_role": "rep", "roles": ["crm-user"], "groups": ["sales"]}]}},
+    ])
+    bridge = IdentityBridge(cfg)
+    resp = await bridge._issue(SessionIdentity(sub="sam", app_roles=["rep"], validator="crm-proxy"), event="t")
+    from aiready.core.identity import get_token_service
+
+    p = get_token_service().verify(resp.access_token)
+    assert p.app == "crm" and "crm-user" in p.roles and "sales" in p.groups

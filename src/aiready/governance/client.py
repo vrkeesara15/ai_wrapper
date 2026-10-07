@@ -82,6 +82,13 @@ class RegistryClient:
     async def model_facts(self, model: str) -> dict[str, Any] | None:
         return (await self.http.json("GET", f"/v1/registry/facts/{model}"))["facts"]
 
+    async def record_evaluation(self, *, release: str, passed: bool, report: dict[str, Any],
+                                artifact: dict[str, Any] | None = None,
+                                principal: Principal | None = None) -> dict[str, Any]:
+        return await self.http.json("POST", "/v1/registry/evaluations", principal=principal,
+                                    json={"release": release, "passed": passed, "report": report,
+                                          "artifact": artifact or {}})
+
     async def get_model(self, model: str, version: str | None = None) -> ModelRecord:
         params = {"version": version} if version else None
         return ModelRecord.model_validate(

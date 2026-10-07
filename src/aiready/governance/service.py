@@ -340,6 +340,12 @@ class AsyncRegistry:
     async def register_model(self, record: ModelRecord | dict[str, Any], principal: Principal) -> ModelRecord:
         return self.registry.register_model(record, principal)
 
+    async def record_evaluation(self, *, release: str, passed: bool, report: dict[str, Any],
+                                artifact: dict[str, Any] | None = None,
+                                principal: Principal | None = None) -> dict[str, Any]:
+        return self.registry.record_evaluation(release=release, passed=passed, report=report, artifact=artifact,
+                                               principal=principal)
+
     async def approve_model(
         self, model: str, version: str, principal: Principal, note: str = ""
     ) -> ModelRecord:

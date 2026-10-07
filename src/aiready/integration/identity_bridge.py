@@ -371,11 +371,21 @@ class IdentityBridge:
                  validator_extra: dict[str, Any] | None = None):
         self.config = config or IdentityBridgeConfig()
         self._token_service = token_service
+        # Per-validator overrides make one bridge serve many applications: each app's session validator names
+        # the app its users act in and how that app's roles map to platform roles and groups.
+        self._app_for: dict[str, str] = {}
+        self._mapping_for: dict[str, RoleMapping] = {}
         if validators is None:
             validators = []
             for spec in self.config.validators:
                 spec = dict(spec)
                 spec.setdefault("name", spec.get("type") or spec.get("class", "custom"))
+                app = spec.pop("app", None)
+                if app:
+                    self._app_for[spec["name"]] = str(app)
+                mapping = spec.pop("role_mapping", None)
+                if mapping:
+                    self._mapping_for[spec["name"]] = RoleMapping.model_validate(mapping)
                 validators.append(plugins.create("session_validator", spec, **(validator_extra or {})))
         self.validators: dict[str, SessionValidator] = {v.name: v for v in validators}
         if not self.validators:
@@ -415,16 +425,17 @@ class IdentityBridge:
 
     async def _issue(self, ident: SessionIdentity, *, event: str, extra_details: dict[str, Any] | None = None) -> TokenResponse:
         cfg = self.config
-        roles, groups = map_roles(ident, cfg.role_mapping)
+        app = self._app_for.get(ident.validator or "", cfg.app)
+        roles, groups = map_roles(ident, self._mapping_for.get(ident.validator or "", cfg.role_mapping))
         tenant = ident.tenant or cfg.default_tenant
-        principal_view = {"sub": ident.sub, "tenant": tenant, "app": cfg.app, "roles": roles, "groups": groups}
+        principal_view = {"sub": ident.sub, "tenant": tenant, "app": app, "roles": roles, "groups": groups}
         if cfg.policy_check:
             from aiready.core.interfaces import PolicyInput
             from aiready.core.wiring import connect
 
             decision = await connect("policy").decide(PolicyInput(
                 action="identity.token_issue", principal=principal_view,
-                resource={"validator": ident.validator, "app": cfg.app},
+                resource={"validator": ident.validator, "app": app},
                 context={"attributes": ident.attributes}))
             if not decision.allow:
                 self._deny(ident.sub, "; ".join(decision.reasons) or "policy denied", ident.validator,
@@ -435,11 +446,11 @@ class IdentityBridge:
             extra[cfg.app_session_claim] = ident.session
         if ident.attributes:
             extra["attrs"] = {k: v for k, v in ident.attributes.items() if isinstance(v, (str, int, float, bool))}
-        token = self.token_service.issue(sub=ident.sub, tenant=tenant, app=cfg.app, roles=roles, groups=groups,
+        token = self.token_service.issue(sub=ident.sub, tenant=tenant, app=app, roles=roles, groups=groups,
                                          email=ident.email, name=ident.name, ttl=cfg.token_ttl_seconds, extra=extra)
         claims = jwt.decode(token, options={"verify_signature": False})
         metrics.policy.labels(SERVICE, "identity.token_issue", "allow").inc()
-        get_audit().record(event, actor=ident.sub, tenant=tenant, app=cfg.app, action="identity.token_issue",
+        get_audit().record(event, actor=ident.sub, tenant=tenant, app=app, action="identity.token_issue",
                            resource=ident.validator, decision="allow", jti=claims.get("jti"), roles=roles,
                            groups=groups, ttl=cfg.token_ttl_seconds, **(extra_details or {}))
         return TokenResponse(access_token=token, expires_in=cfg.token_ttl_seconds, sub=ident.sub, tenant=tenant,

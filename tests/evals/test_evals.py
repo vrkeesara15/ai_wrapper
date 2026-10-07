@@ -275,9 +275,10 @@ async def test_record_gate_audits_and_updates_registry(admin_principal=None):
     assert res.registry_recorded and reg.calls[0]["release"] == "3.0" and reg.calls[0]["passed"] is True
     rec = [r for r in get_audit().read() if r.event == "evals.gate"][-1]
     assert rec.decision == "pass" and rec.resource == "3.0"
-    wiring.reset()
-    res2 = await record_gate(evaluate_gate([card], {}, GateConfig()))  # no registry deployed: still audited
+    wiring.override("registry", object())  # a registry without evaluation support: verdict is still audited
+    res2 = await record_gate(evaluate_gate([card], {}, GateConfig()))
     assert not res2.registry_recorded
+    wiring.reset()
 
 
 async def test_cli_gate_exit_code(tmp_path):
