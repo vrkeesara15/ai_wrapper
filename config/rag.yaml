@@ -89,7 +89,7 @@ rag:
 
   cache:
     enabled: true
-    kv: {type: memory}        # use {type: redis, url: ...} with more than one replica
+    kv: {type: "${AIREADY_KV_TYPE:-memory}", url: "${AIREADY_REDIS_URL:-redis://localhost:6379/0}"}   # semantic cache shared by every replica
     threshold: 0.92           # cosine similarity for a semantic hit
     default_ttl_seconds: 3600
     ttl_by_content_type: {}   # chunk.metadata.content_type -> seconds, e.g. {policy: 86400, news: 600}

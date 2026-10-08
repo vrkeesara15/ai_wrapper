@@ -204,7 +204,8 @@ class IngestionPipeline:
         """Steps 3-8 for one work message. Raises on failure so the worker can retry / dead-letter.
 
         Outcomes (counted on the run next to the detection counts new / changed / unchanged / deleted):
-        ``indexed``, ``removed``, ``unchanged`` (duplicate event), ``blocked``, ``quarantined``, ``empty``."""
+        ``indexed``, ``removed``, ``duplicate`` (event for an unchanged item), ``blocked``, ``quarantined``,
+        ``empty`` (``dead_lettered`` is counted by the worker)."""
         doc = decode_document(payload["document"])
         source = payload.get("source") or doc.source
         run_id = payload.get("run_id")
@@ -222,7 +223,7 @@ class IngestionPipeline:
         if doc.checksum is None:
             doc.checksum = checksum_of(doc.content)
         if self.registry.classify(doc) == "unchanged" and not payload.get("force"):
-            return "unchanged"  # duplicate event (change capture + scheduled run): nothing to do
+            return "duplicate"  # duplicate event (change capture + scheduled run): nothing to do
         previous = self.registry.get(doc.id, doc.source)
         collection = src.collection
         landing_uri = payload.get("landing_uri")
@@ -343,7 +344,25 @@ class IngestionPipeline:
         from aiready.ingestion.worker import Worker
 
         await Worker(self).drain()
+        await self._wait_for_outcomes(run.run_id)
         return await self.finish_run(run.run_id, verify=verify)
+
+    OUTCOMES = ("indexed", "removed", "duplicate", "blocked", "quarantined", "empty", "dead_lettered")
+
+    async def _wait_for_outcomes(self, run_id: str, timeout: float = 120.0) -> None:
+        """When separate workers share the queue, this process's drain returns once the queue is empty while
+        other workers may still be processing the run's documents. Verification must only start after every
+        enqueued document has an outcome, so the new content is really in the index."""
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            run = self.registry.get_run(run_id)
+            if run is None:
+                return
+            done = sum(run.counts.get(k, 0) for k in self.OUTCOMES)
+            if done >= run.counts.get("enqueued", 0):
+                return
+            await asyncio.sleep(0.25)
+        log.warning("run %s: not every document had an outcome after %ss; verifying anyway", run_id, timeout)
 
     async def finish_run(self, run_id: str, *, verify: bool = True) -> RunRecord:
         run = self.registry.get_run(run_id)

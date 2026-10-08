@@ -211,12 +211,16 @@ def setup_telemetry(service: str, *, json_logs: bool | None = None, level: str |
     if os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT"):
         try:
             from opentelemetry import trace
-            from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
             from opentelemetry.sdk.resources import Resource
             from opentelemetry.sdk.trace import TracerProvider
             from opentelemetry.sdk.trace.export import BatchSpanProcessor
 
             provider = TracerProvider(resource=Resource.create({"service.name": service}))
+            # honour the standard OTEL_EXPORTER_OTLP_PROTOCOL (grpc on :4317, http/protobuf on :4318)
+            if os.environ.get("OTEL_EXPORTER_OTLP_PROTOCOL", "http/protobuf").startswith("grpc"):
+                from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
+            else:
+                from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
             provider.add_span_processor(BatchSpanProcessor(OTLPSpanExporter()))
             trace.set_tracer_provider(provider)
             _otel_tracer = trace.get_tracer("aiready")

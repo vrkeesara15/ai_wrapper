@@ -72,6 +72,7 @@ def create_app(pipeline: IngestionPipeline | None = None) -> FastAPI:
             from aiready.ingestion.worker import Worker
 
             await Worker(pl).drain()
+            await pl._wait_for_outcomes(run.run_id)  # other workers may still hold some of the run's documents
             await pl.finish_run(run.run_id, verify=body.verify)
 
         background.add_task(finish)

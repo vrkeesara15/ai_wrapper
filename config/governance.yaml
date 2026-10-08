@@ -90,6 +90,6 @@ governance:
 
   # Deny-list for revoked tokens / subjects and closed routes. Use redis with more than one replica:
   #   kv: {type: redis, url: "${AIREADY_REDIS_URL:-redis://localhost:6379/0}"}
-  kv: {type: memory}
+  kv: {type: "${AIREADY_KV_TYPE:-memory}", url: "${AIREADY_REDIS_URL:-redis://localhost:6379/0}"}   # shared deny-list / route closures: redis when services are split
   # How long a revoked token id stays listed (>= the longest token lifetime in use).
   revocation_ttl_seconds: 86400

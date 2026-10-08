@@ -46,9 +46,12 @@ def _parse_time(value: str | None) -> float | None:
 
 
 def _governance() -> Any:
-    from aiready.core.wiring import connect
+    """The governance service itself, never its HTTP client: the CLI is an operator tool with direct access to
+    the shared state store and KV (as every governance replica has), so incident, registry and policy actions
+    take effect cluster-wide and are audited under the operator's identity."""
+    from aiready.core.wiring import local
 
-    return connect("policy")
+    return local("policy")
 
 
 def _secret_dir() -> Path:

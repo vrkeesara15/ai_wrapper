@@ -448,3 +448,125 @@ class OpenSearchIndex:
         )
         self._known.discard(collection)
         return self.count(collection)
+
+
+# =========================================================================== postgres full-text
+
+_PG_TERM = re.compile(r"[^0-9a-z_]")
+
+
+@register("keyword_index", "postgres")
+class PostgresKeywordIndex:
+    """Keyword index on PostgreSQL full-text search (``tsvector`` + GIN), shared by every search replica.
+
+    Uses the state database that every deployment already runs, so exact terms, codes and names are found
+    without operating another search cluster, and the index survives restarts and scales with replicas.
+    The access filter is part of the SQL (``access_tags ?| groups``), so only chunks the caller may see are
+    ranked; metadata filters are applied to the ranked shortlist. Ranking is ``ts_rank_cd`` (cover density),
+    with OR semantics across query terms like BM25.
+    """
+
+    blocking = True
+
+    def __init__(self, url: str, *, table: str = "aiready_keyword_chunks", text_search_config: str = "english",
+                 overfetch: int = 4):
+        from sqlalchemy import create_engine, text
+
+        if not re.fullmatch(r"[a-z_][a-z0-9_]*", table) or not re.fullmatch(r"[a-z_]+", text_search_config):
+            raise ValueError("invalid table or text search configuration name")
+        self._text = text
+        self.engine = create_engine(url, future=True, pool_pre_ping=True)
+        self.table, self.ts_config, self.overfetch = table, text_search_config, max(1, overfetch)
+        with self.engine.begin() as c:
+            c.execute(text(
+                f"CREATE TABLE IF NOT EXISTS {table} (collection TEXT NOT NULL, chunk_id TEXT NOT NULL, "
+                f"doc_id TEXT NOT NULL, access_tags JSONB NOT NULL DEFAULT '[]', payload JSONB NOT NULL, "
+                f"tsv TSVECTOR NOT NULL, PRIMARY KEY (collection, chunk_id))"))
+            c.execute(text(f"CREATE INDEX IF NOT EXISTS {table}_tsv ON {table} USING GIN (tsv)"))
+            c.execute(text(f"CREATE INDEX IF NOT EXISTS {table}_tags ON {table} USING GIN (access_tags)"))
+            c.execute(text(f"CREATE INDEX IF NOT EXISTS {table}_doc ON {table} (collection, doc_id)"))
+
+    def upsert(self, collection: str, chunks: list[Chunk]) -> int:
+        if not chunks:
+            return 0
+        sql = self._text(
+            f"INSERT INTO {self.table} (collection, chunk_id, doc_id, access_tags, payload, tsv) "
+            f"VALUES (:c, :id, :doc, CAST(:tags AS JSONB), CAST(:payload AS JSONB), "
+            f"to_tsvector(CAST(:cfg AS regconfig), :txt)) "
+            f"ON CONFLICT (collection, chunk_id) DO UPDATE SET doc_id = EXCLUDED.doc_id, "
+            f"access_tags = EXCLUDED.access_tags, payload = EXCLUDED.payload, tsv = EXCLUDED.tsv")
+        rows = [{"c": collection, "id": ch.id, "doc": ch.doc_id, "tags": json.dumps(ch.access_tags),
+                 "payload": json.dumps(payload_of(ch), default=str), "cfg": self.ts_config,
+                 "txt": index_text(ch)} for ch in chunks]
+        with self.engine.begin() as c:
+            c.execute(sql, rows)
+        return len(chunks)
+
+    def delete(
+        self, collection: str, *, doc_ids: list[str] | None = None, chunk_ids: list[str] | None = None
+    ) -> int:
+        from sqlalchemy import bindparam
+
+        n = 0
+        with self.engine.begin() as c:
+            if doc_ids:
+                n += c.execute(self._text(f"DELETE FROM {self.table} WHERE collection = :c AND doc_id IN :ids")
+                               .bindparams(bindparam("ids", expanding=True)), {"c": collection, "ids": doc_ids}).rowcount
+            if chunk_ids:
+                n += c.execute(self._text(f"DELETE FROM {self.table} WHERE collection = :c AND chunk_id IN :ids")
+                               .bindparams(bindparam("ids", expanding=True)), {"c": collection, "ids": chunk_ids}).rowcount
+        return n
+
+    def search(
+        self, collection: str, text: str, flt: SearchFilter | None, k: int
+    ) -> list[tuple[Chunk, float]]:
+        terms = [t for t in dict.fromkeys(_PG_TERM.sub("", w) for w in tokenize(text)) if t]
+        if not terms or k <= 0:
+            return []
+        params: dict[str, Any] = {"c": collection, "cfg": self.ts_config, "q": " | ".join(terms),
+                                  "lim": k * self.overfetch}
+        access = ""
+        if flt is not None and flt.access_groups is not None:
+            if not flt.access_groups:
+                return []
+            access = "AND access_tags ?| CAST(:groups AS TEXT[])"
+            params["groups"] = list(flt.access_groups)
+        sql = self._text(
+            f"SELECT payload, ts_rank_cd(tsv, q) AS score FROM {self.table}, "
+            f"to_tsquery(CAST(:cfg AS regconfig), :q) AS q "
+            f"WHERE collection = :c AND tsv @@ q {access} ORDER BY score DESC, chunk_id LIMIT :lim")
+        with self.engine.connect() as c:
+            rows = c.execute(sql, params).all()
+        out = []
+        for payload, score in rows:
+            p = payload if isinstance(payload, dict) else json.loads(payload)
+            if matches(p, flt):  # metadata conditions (and the access rule again, defensively)
+                out.append((Chunk.model_validate(p), float(score)))
+            if len(out) >= k:
+                break
+        return out
+
+    def count(self, collection: str) -> int:
+        with self.engine.connect() as c:
+            return int(c.execute(self._text(f"SELECT count(*) FROM {self.table} WHERE collection = :c"),
+                                 {"c": collection}).scalar() or 0)
+
+    def snapshot(self, collection: str, directory: str) -> str:
+        with self.engine.connect() as c:
+            rows = c.execute(self._text(f"SELECT payload FROM {self.table} WHERE collection = :c ORDER BY chunk_id"),
+                             {"c": collection}).all()
+        if not rows:
+            raise NotFound(f"collection '{collection}' does not exist")
+        path = Path(directory) / f"{collection}-{time.strftime('%Y%m%dT%H%M%S')}-{uuid.uuid4().hex[:6]}.pgkw.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"payloads": [r[0] if isinstance(r[0], dict) else json.loads(r[0]) for r in rows]}))
+        return str(path)
+
+    def restore(self, collection: str, location: str) -> int:
+        path = Path(location)
+        if not path.is_file():
+            raise NotFound(f"snapshot '{location}' not found")
+        chunks = [Chunk.model_validate(p) for p in json.loads(path.read_text())["payloads"]]
+        with self.engine.begin() as c:
+            c.execute(self._text(f"DELETE FROM {self.table} WHERE collection = :c"), {"c": collection})
+        return self.upsert(collection, chunks)

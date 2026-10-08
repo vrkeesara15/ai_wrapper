@@ -31,7 +31,7 @@ embedding:
 
   cache:                    # text hash + model id + version -> vector; repeated text skips the GPU
     enabled: true
-    kv: {type: memory}      # {type: redis, url: "${REDIS_URL}"} when running more than one replica
+    kv: {type: "${AIREADY_KV_TYPE:-memory}", url: "${AIREADY_REDIS_URL:-redis://localhost:6379/0}"}   # shared vector cache across replicas
     ttl_seconds: 604800
 
   batcher:                  # dynamic batching; `live` (queries) always served before `bulk` (ingestion)
@@ -79,7 +79,7 @@ search:
   base_collection: knowledge   # collections: <base>__<app>__<tenant> (one per application and tenant)
   vector_store:
     type: memory
-    # persist_dir: data/vectors      # survive restarts on a single-node pilot
+    persist_dir: data/search/vectors # survives restarts on a single-node pilot (relative to the data directory)
     # --- production examples -------------------------------------------------------------------
     # type: qdrant                     # pip install aiready[qdrant]
     # url: ${QDRANT_URL:-http://qdrant:6333}
@@ -101,7 +101,9 @@ search:
     type: bm25              # exact terms, codes and names
     k1: 1.2
     b: 0.75
-    # persist_dir: data/bm25
+    persist_dir: data/search/bm25
+    # type: postgres                   # shared by every search replica (the state database): see the overlays
+    # url: ${AIREADY_STATE_URL}
     # --- production example --------------------------------------------------------------------
     # type: opensearch
     # url: ${OPENSEARCH_URL:-https://opensearch:9200}

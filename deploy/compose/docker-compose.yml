@@ -55,9 +55,14 @@ x-env: &env
   # pilot uses postgres + redis rather than the single-process sqlite/memory defaults.
   AIREADY_STATE_URL: postgresql+psycopg://aiready:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/aiready
   AIREADY_KV_TYPE: redis
+  LEGACY_DOCS_DIR: /srv/sources/legacy_docs
+  AIREADY_FACADE_URL: http://facade:8151   # MCP turns the facade's OpenAPI operations into tools
+  LEGACY_DB_SOURCE_ENABLED: "false"   # the demo app's database lives inside its own container (no replica here)
+  AIREADY_DEMO_TENANT: acme
   AIREADY_QUEUE_TYPE: redis
   AIREADY_REDIS_URL: redis://:${REDIS_PASSWORD:?set REDIS_PASSWORD in .env}@redis:6379/0
   QDRANT_URL: http://qdrant:6333
+  AIREADY_SECRET_QDRANT_API_KEY: ${QDRANT_API_KEY:-}
   QDRANT_API_KEY: ${QDRANT_API_KEY:-}
   LEGACY_APP_URL: ${LEGACY_APP_URL:-http://legacy-app:8000}
   # Outbound calls (vendor APIs, SaaS connectors) leave only through the egress proxy.
@@ -311,6 +316,7 @@ services:
   redis:
     <<: *hardening
     image: ${REDIS_IMAGE:-redis:7.4-alpine}
+    user: "999:1000"          # run as the image's redis user: with cap_drop ALL the entrypoint cannot switch users
     command: ["redis-server", "--requirepass", "${REDIS_PASSWORD:?set REDIS_PASSWORD in .env}", "--appendonly", "yes", "--maxmemory-policy", "noeviction"]
     volumes: [redis-data:/data]
     networks: [data-zone]
@@ -327,7 +333,7 @@ services:
     read_only: false
     environment:
       QDRANT__TELEMETRY_DISABLED: "true"
-      QDRANT__SERVICE__API_KEY: ${QDRANT_API_KEY:-}
+      QDRANT__SERVICE__API_KEY: ${QDRANT_API_KEY:?run deploy/compose/init-secrets.sh (make run-pilot does)}
     volumes:
       - qdrant-data:/qdrant/storage
       - qdrant-snapshots:/qdrant/snapshots
@@ -395,9 +401,10 @@ services:
   egress-proxy:
     <<: *hardening
     image: ${SQUID_IMAGE:-ubuntu/squid:6.6-24.04_edge}
+    user: "13:13"             # squid's own "proxy" user from the start: no privilege drop, no extra capabilities
+    entrypoint: ["squid", "-N", "-f", "/etc/squid/squid.conf"]
     read_only: false
     cap_drop: [ALL]
-    cap_add: [SETUID, SETGID, CHOWN]
     volumes:
       - ../security/egress-proxy/squid.conf:/etc/squid/squid.conf:ro
       - ../security/egress-proxy/allowlist.txt:/etc/squid/allowlist.txt:ro
@@ -409,10 +416,11 @@ services:
     profiles: [demo]
     image: ${AIREADY_IMAGE:-aiready/aiready}:${AIREADY_VERSION:-dev}
     user: "10001:10001"
-    command: ["uvicorn", "app:app", "--app-dir", "/opt/examples/legacy_app", "--host", "0.0.0.0", "--port", "8000"]
-    environment: {PYTHONPATH: /opt/examples/legacy_app}
+    command: ["uvicorn", "examples.legacy_app.app:create_app", "--factory", "--host", "0.0.0.0", "--port", "8000"]
+    environment: {PYTHONPATH: /opt, LEGACY_DB: /var/lib/legacy/legacy.db}
     healthcheck: {disable: true}
     volumes: [../../examples:/opt/examples:ro]
+    tmpfs: ["/tmp:size=64m", "/var/lib/legacy:size=64m,uid=10001,gid=10001"]   # demo data, re-seeded on start
     networks: [app-zone]
     ports: ["${AIREADY_BIND:-127.0.0.1}:8000:8000"]
 

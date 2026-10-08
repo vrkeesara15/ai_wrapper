@@ -60,6 +60,7 @@ ingestion:
     # A full reconcile once a day; change capture (config/integration.yaml) streams changes in between
     # under the same source name, so both paths share one registry and one set of document ids.
     - name: legacy-db
+      enabled: ${LEGACY_DB_SOURCE_ENABLED:-true}
       collection: claims-records
       app: claims             # indexed into <collection>__<app>__<tenant>, as RAG queries it
       tenant: ${AIREADY_DEMO_TENANT:-acme}
@@ -180,7 +181,7 @@ ingestion:
   # Work queue, worker pool, dead letters
   # ---------------------------------------------------------------------------------------------------
   queue:
-    spec: {type: memory}       # redis in production: {type: redis, url: redis://redis:6379/0}
+    spec: {type: "${AIREADY_QUEUE_TYPE:-memory}", url: "${AIREADY_REDIS_URL:-redis://localhost:6379/0}"}   # redis when the API and workers are separate processes
     topic: ingestion.documents # change capture puts its messages on the same topic
     max_attempts: 3            # then the message goes to the dead-letter queue (permanent errors go at once)
     concurrency: 4             # documents processed in parallel per worker process

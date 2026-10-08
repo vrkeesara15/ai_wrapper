@@ -88,10 +88,10 @@ class Verifier:
             from aiready.core.identity import get_token_service
 
             ts = get_token_service()
-            return ts.verify(ts.issue(sub="svc:ingestion-verifier", roles=["service", "verifier"], groups=groups,
+            return ts.verify(ts.issue(sub="verifier:ingestion", roles=["verifier"], groups=groups,
                                       app=app, tenant=tenant, ttl=60))
         except Exception:  # no signing key in this process: in-process search only needs the groups
-            return Principal(sub="svc:ingestion-verifier", roles=["service", "verifier"], groups=groups,
+            return Principal(sub="verifier:ingestion", roles=["verifier"], groups=groups,
                              app=app, tenant=tenant, service="ingestion")
 
     @staticmethod

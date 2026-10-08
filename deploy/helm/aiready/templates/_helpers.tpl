@@ -295,6 +295,8 @@ http://mock-models:8200/v1
 - name: QDRANT_URL
   value: "http://qdrant:6333"
 {{- end }}
+- name: AIREADY_FACADE_URL
+  value: "http://facade:8151"
 {{- with $root.Values.legacyApp.url }}
 - name: LEGACY_APP_URL
   value: {{ . | quote }}

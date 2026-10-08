@@ -82,7 +82,8 @@ ENV PATH="/opt/venv/bin:${PATH}" \
     HOME=/home/aiready
 
 USER 10001:10001
-WORKDIR /home/aiready
+# Relative data paths in config (data/landing, data/snapshots...) resolve into the writable data volume.
+WORKDIR /var/lib/aiready
 VOLUME ["/var/lib/aiready", "/tmp"]
 EXPOSE 8080
 

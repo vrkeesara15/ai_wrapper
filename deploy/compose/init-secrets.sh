@@ -29,3 +29,11 @@ gen service_token_key 64
 gen grafana_admin_password 24
 # No vendor API in the pilot by default: an empty key keeps public routes closed.
 [[ -e "$dir/llm_api_key" ]] || { : >"$dir/llm_api_key"; chmod 644 "$dir/llm_api_key"; echo "created secrets/llm_api_key (empty)"; }
+
+# Qdrant reads its API key from the environment, so it lives in .env (generated once, never overwritten).
+env_file="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/.env"
+if [[ -f "$env_file" ]] && grep -qE '^QDRANT_API_KEY=$' "$env_file"; then
+  key="$(openssl rand -hex 32 2>/dev/null || head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+  sed -i.bak "s/^QDRANT_API_KEY=$/QDRANT_API_KEY=${key}/" "$env_file" && rm -f "$env_file.bak"
+  echo "generated QDRANT_API_KEY in .env"
+fi

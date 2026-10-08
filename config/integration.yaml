@@ -208,7 +208,7 @@ integration:
     interval_seconds: 60
     batch_size: 1000
     policy_check: true           # action data.read as svc:change-capture before each run
-    queue: {type: memory}        # must be the same queue the ingestion workers read (redis in production)
+    queue: {type: "${AIREADY_QUEUE_TYPE:-memory}", url: "${AIREADY_REDIS_URL:-redis://localhost:6379/0}"}   # the same queue the ingestion workers read
     tombstone:                   # delete detection: table filled by triggers on delete
       table: deleted_records
       id_column: id

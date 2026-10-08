@@ -21,7 +21,7 @@ AIREADY        ?= $(dir $(PYTHON))aiready
 # helm is optional locally: HELM="docker run --rm -v $$PWD:/repo -w /repo alpine/helm:3.16.2" make helm-lint
 HELM           ?= helm
 
-.PHONY: help install test lint fmt policy-test run-pilot run-pilot-gpu run-demo stop-pilot logs build push sign sbom scan \
+.PHONY: help install test lint fmt policy-test run-pilot run-pilot-gpu run-demo stop-pilot logs smoke smoke-compose build push sign sbom scan \
         bundle verify-bundle helm-lint helm-template eval eval-gate tf-validate clean
 
 help: ## Show this help
@@ -54,6 +54,13 @@ policy-test: ## Run the policy-as-code test cases
 deploy/compose/.env:
 	cp deploy/compose/.env.example deploy/compose/.env
 	@echo "Created deploy/compose/.env from the example - review it before exposing the pilot to users."
+
+smoke: ## End-to-end checks against `aiready serve all` + the sample app on localhost
+	$(PYTHON) scripts/smoke_test.py
+
+smoke-compose: ## End-to-end checks inside the running compose demo stack (make run-demo first)
+	$(COMPOSE) --profile demo run --rm --no-deps -v $(CURDIR)/scripts:/opt/scripts:ro ingestion-worker \
+		python /opt/scripts/smoke_test.py --compose
 
 run-pilot: deploy/compose/.env ## Stage 1: start the pilot on this host (mock models, no GPU)
 	./deploy/compose/init-secrets.sh

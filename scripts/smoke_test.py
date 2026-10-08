@@ -38,12 +38,21 @@ def check(name: str, cond: bool, detail: Any = "") -> None:
     print(f"  {mark} {name}" + ("" if cond else f"  -> {str(detail)[:300]}"))
 
 
+# service hostnames inside the docker compose / kubernetes network
+HOSTS = {"legacy": "legacy-app", "gateway": "gateway", "admin": "gateway-admin", "rag": "rag", "agents": "agents",
+         "assistant": "assistant", "mcp": "mcp", "bridge": "identity-bridge", "ingestion": "ingestion",
+         "observability": "observability"}
+
+
 class Env:
-    def __init__(self, base: str):
+    def __init__(self, base: str, compose: bool = False):
         self.base = base.rstrip("/")
+        self.compose = compose
         self.http = httpx.Client(timeout=60)
 
     def url(self, svc: str, path: str) -> str:
+        if self.compose:
+            return f"http://{HOSTS[svc]}:{PORTS[svc]}{path}"
         return f"{self.base}:{PORTS[svc]}{path}"
 
     def token_for(self, login: str) -> str:
@@ -104,7 +113,7 @@ def run(env: Env) -> None:
     step("4. Assistant + agent runtime (SSE)")
     with env.http.stream("POST", env.url("assistant", "/v1/assistant/chat"),
                          json={"message": "What is the excess for escape of water claims?", "app": "claims"},
-                         headers={"Authorization": f"Bearer {alice}", "Origin": f"{env.base}:8000"}) as r:
+                         headers={"Authorization": f"Bearer {alice}", "Origin": "http://localhost:8000"}) as r:
         events = [json.loads(line[5:]) for line in r.iter_lines() if line.startswith("data:")]
     done = next((e for e in events if e.get("status") in ("completed", "failed")), {})
     check("workflow run completes with a cited answer", done.get("status") == "completed" and done.get("citations"),
@@ -182,7 +191,10 @@ async def _mcp(env: Env, token: str) -> tuple[list[str], bool]:
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--base", default="http://localhost")
-    env = Env(ap.parse_args().base)
+    ap.add_argument("--compose", action="store_true",
+                    help="run inside the compose network (service hostnames), e.g. via `make smoke-compose`")
+    args = ap.parse_args()
+    env = Env(args.base, compose=args.compose)
     try:
         run(env)
     except Exception as exc:  # report what passed so far

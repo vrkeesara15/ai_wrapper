@@ -161,7 +161,9 @@ def test_default_config_file_parses():
     import yaml
 
     root = pathlib.Path(__file__).resolve().parents[2]
-    tree = yaml.safe_load((root / "config" / "knowledge.yaml").read_text())
+    from aiready.core.config import _substitute
+
+    tree = _substitute(yaml.safe_load((root / "config" / "knowledge.yaml").read_text()))  # as the loader does
     set_config(ConfigStore(tree=tree))
     svc = EmbeddingService()
     assert svc.index_model_fingerprint() == "hash-embed@1/384"

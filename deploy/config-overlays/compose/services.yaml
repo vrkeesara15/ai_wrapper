@@ -59,3 +59,14 @@ models:
       =replicas: [{type: openai, base_url: "${AIREADY_MODEL_EMBED_URL:-http://mock-models:8200/v1}"}]
     reranker:
       =replicas: [{type: openai, base_url: "${AIREADY_MODEL_RERANK_URL:-http://mock-models:8200/v1}"}]
+
+# Search: vectors in the Qdrant cluster, keywords in PostgreSQL full-text search (the state database), so every
+# search replica sees the same index and nothing is lost when a pod restarts. "=" replaces the pilot defaults.
+search:
+  =vector_store:
+    type: qdrant
+    url: ${QDRANT_URL:-http://qdrant:6333}
+    api_key: ${secret:qdrant_api_key}
+  =keyword_index:
+    type: postgres
+    url: ${AIREADY_STATE_URL}
