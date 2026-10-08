@@ -159,3 +159,27 @@ delete the next release, or run `helm rollback`.
 
 See `docs/runbooks/`: incident response, model rollout and rollback, adding a GPU node, restoring the vector
 index, rotating signing keys, replaying dead letters, and audit chain verification.
+
+## Verify a deployment
+
+`scripts/smoke_test.py` drives the whole request path against a running deployment and the sample legacy app,
+and asserts every control (24 checks: identity bridge, ingestion + verification, cited answers, access isolation
+between users, semantic cache, injection blocking, assistant workflow, read tools under the user's own rights,
+write approval with four eyes, MCP over the official SDK, revocation everywhere, admin and dashboard access,
+audit chain integrity).
+
+```bash
+make smoke            # against `aiready serve all` + `python -m examples.legacy_app` on localhost
+make smoke-compose    # inside the compose network after `make run-demo` (every service in its own container)
+```
+
+## Search storage per stage
+
+| Stage | Vectors | Keywords | Why |
+|---|---|---|---|
+| Pilot, one process | `memory` with `persist_dir` | `bm25` with `persist_dir` | no infrastructure; survives restarts |
+| Compose / Kubernetes | `qdrant` (replicas, snapshots) | `postgres` full-text on the state database | every search replica sees the same index; nothing lost when a pod restarts |
+| Large corpora | `qdrant` cluster (shards x replicas) | `opensearch` | scale-out keyword search |
+
+The overlays in `deploy/config-overlays/{compose,k8s}` select the second row. The document registry lives in the
+state database, so the index must be durable too: never pair a persistent registry with a non-persistent index.
