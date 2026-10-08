@@ -112,7 +112,7 @@ deploy/          compose (pilot), helm (production/platform), terraform (AWS), o
 examples/        legacy_app: the untouched sample application used by demos and tests
 scripts/         smoke_test.py: end-to-end checks against a running deployment
 tests/           unit, contract and integration tests (no network, no GPU)
-docs/            deployment, onboarding, governance, customization, conventions, runbooks
+docs/            deployment, onboarding, governance, customization, operating model, conventions, runbooks
 ```
 
 ## Development
